@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	hqgoschedulerlogger "github.com/hueristiq/hq-lib-scheduler-go/logger"
 )
 
 // maxSleepQuantum bounds how long the scheduling loop sleeps between
@@ -42,11 +44,14 @@ type ErrorHandler func(entry Entry, err error)
 //   - errorHandler (ErrorHandler): invoked with the entry snapshot and the
 //     error (or recovered panic) of every failed run. Nil means failures are
 //     silently dropped.
+//   - logger (hqgoschedulerlogger.Logger): the structured logger receiving
+//     lifecycle, activation, and failure records. Defaults to [logger.Nop].
 type options struct {
 	location       *time.Location
 	clock          func() time.Time
 	maxConcurrency int
 	errorHandler   ErrorHandler
+	logger         hqgoschedulerlogger.Logger
 }
 
 // OptionFunc configures a [Scheduler] through the functional-options idiom.
@@ -129,6 +134,25 @@ func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
 	return
 }
 
+// WithLogger configures the structured logger receiving the scheduler's
+// lifecycle, activation, and failure records. A panic from the logger is
+// recovered: a misbehaving logger never crashes the scheduler.
+//
+// Parameters:
+//   - l (hqgoschedulerlogger.Logger): the logger. Nil is ignored.
+//
+// Returns:
+//   - of (OptionFunc): the option applying l.
+func WithLogger(l hqgoschedulerlogger.Logger) (of OptionFunc) {
+	of = func(opts *options) {
+		if l != nil {
+			opts.logger = l
+		}
+	}
+
+	return
+}
+
 // Scheduler registers [Job] values against schedules and executes them
 // concurrently on their activation times.
 //
@@ -167,6 +191,8 @@ func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
 //   - maxConcurrency (int): the concurrency bound; zero means unlimited.
 //   - sem (chan struct{}): the concurrency semaphore; nil when unlimited.
 //   - errorHandler (ErrorHandler): the failure callback.
+//   - logger (hqgoschedulerlogger.Logger): the structured logger receiving
+//     lifecycle, activation, and failure records.
 //   - entries (map[int]*entry): registered entries by identifier.
 //   - nextID (int): the next entry identifier to hand out.
 //   - generation (int): identifies the active scheduling loop; bumped by
@@ -185,6 +211,7 @@ type Scheduler struct {
 	maxConcurrency int
 	sem            chan struct{}
 	errorHandler   ErrorHandler
+	logger         hqgoschedulerlogger.Logger
 	entries        map[int]*entry
 	nextID         int
 	generation     int
@@ -212,11 +239,19 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 		of(opts)
 	}
 
+	if opts.logger == nil {
+		opts.logger = hqgoschedulerlogger.Nop{}
+	}
+
+	// Guard every record against a panicking logger.
+	opts.logger = safeLogger{logger: opts.logger}
+
 	scheduler = &Scheduler{
 		location:       opts.location,
 		clock:          opts.clock,
 		maxConcurrency: opts.maxConcurrency,
 		errorHandler:   opts.errorHandler,
+		logger:         opts.logger,
 		entries:        make(map[int]*entry),
 		wake:           make(chan struct{}, 1),
 	}
@@ -324,6 +359,8 @@ func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
 
 	s.mu.Unlock()
 
+	s.logger.Debug("entry added", "entry_id", entryID, "job", job.Name())
+
 	s.signal()
 
 	return
@@ -339,9 +376,15 @@ func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
 func (s *Scheduler) Remove(entryID int) {
 	s.mu.Lock()
 
+	_, existed := s.entries[entryID]
+
 	delete(s.entries, entryID)
 
 	s.mu.Unlock()
+
+	if existed {
+		s.logger.Debug("entry removed", "entry_id", entryID)
+	}
 
 	s.signal()
 }
@@ -401,6 +444,8 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Unlock()
 
 	go s.loop(generation, runCtx, loopDone)
+
+	s.logger.Debug("scheduler started")
 }
 
 // Stop gracefully shuts the scheduler down: the scheduling loop halts, every
@@ -434,6 +479,8 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 	case <-ctx.Done():
 		err = fmt.Errorf("scheduler.Stop: timed out waiting for the scheduling loop: %w", ctx.Err())
 
+		s.logger.Warn("scheduler stop timed out waiting for the scheduling loop", "error", err)
+
 		return
 	}
 
@@ -450,6 +497,8 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 	case <-ctx.Done():
 		err = fmt.Errorf("scheduler.Stop: timed out waiting for in-flight runs: %w", ctx.Err())
 
+		s.logger.Warn("scheduler stop timed out waiting for in-flight runs", "error", err)
+
 		return
 	}
 
@@ -461,6 +510,8 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 	}
 
 	s.mu.Unlock()
+
+	s.logger.Debug("scheduler stopped")
 
 	return
 }
@@ -483,6 +534,21 @@ func (s *Scheduler) now() (now time.Time) {
 	now = s.clock().In(s.location)
 
 	return
+}
+
+// skippedActivation records an activation dropped because the previous run
+// of its entry was still in flight, so it can be logged after the scheduling
+// loop releases its lock.
+//
+// Fields:
+//   - id (int): the entry identifier.
+//   - job (Job): the job whose run was skipped; its name is resolved after
+//     the lock is released.
+//   - scheduled (time.Time): the dropped activation time.
+type skippedActivation struct {
+	id        int
+	job       Job
+	scheduled time.Time
 }
 
 // loop is the scheduling loop: it fires due entries, then sleeps until the
@@ -512,6 +578,8 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 
 		var earliest time.Time
 
+		var skipped []skippedActivation
+
 		for _, e := range s.entries {
 			if e.next.IsZero() {
 				e.next = e.schedule.Next(now)
@@ -525,6 +593,12 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 					s.wg.Add(1)
 
 					go s.runJob(e.id, e.job, runCtx)
+				} else {
+					skipped = append(skipped, skippedActivation{
+						id:        e.id,
+						job:       e.job,
+						scheduled: e.next,
+					})
 				}
 
 				// Reschedule from now; an activation skipped because the
@@ -538,6 +612,14 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 		}
 
 		s.mu.Unlock()
+
+		for _, skip := range skipped {
+			s.logger.Info("job run skipped: previous run still in flight",
+				"entry_id", skip.id,
+				"job", skip.job.Name(),
+				"scheduled", skip.scheduled,
+			)
+		}
 
 		var timer *time.Timer
 
@@ -589,6 +671,8 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 	defer s.wg.Done()
 
+	name := job.Name()
+
 	ctx, cancel := context.WithCancel(parent)
 
 	defer cancel()
@@ -602,16 +686,30 @@ func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 			// in-flight flag without running.
 			s.finishRun(id, job)
 
+			s.logger.Debug("job run cancelled before start", "entry_id", id, "job", name)
+
 			return
 		}
 	}
 
+	s.logger.Debug("job run started", "entry_id", id, "job", name)
+
+	started := s.now()
+
 	err := runJobSafely(ctx, job)
+
+	duration := s.now().Sub(started)
 
 	snapshot := s.finishRun(id, job)
 
-	if err != nil && s.errorHandler != nil {
-		s.errorHandler(snapshot, err)
+	if err != nil {
+		s.logger.Error("job run failed", "entry_id", id, "job", name, "error", err, "duration", duration)
+
+		if s.errorHandler != nil {
+			s.errorHandler(snapshot, err)
+		}
+	} else {
+		s.logger.Debug("job run finished", "entry_id", id, "job", name, "duration", duration)
 	}
 }
 
@@ -665,4 +763,66 @@ func runJobSafely(ctx context.Context, job Job) (err error) {
 	err = job.Run(ctx)
 
 	return
+}
+
+// safeLogger wraps a [hqgoschedulerlogger.Logger], recovering a panic from
+// any of its methods: a misbehaving logger never crashes the scheduler or
+// its caller; the panicking record is dropped.
+//
+// Fields:
+//   - logger (hqgoschedulerlogger.Logger): the wrapped logger.
+type safeLogger struct {
+	logger hqgoschedulerlogger.Logger
+}
+
+// Debug emits a debug record through the wrapped logger.
+//
+// Parameters:
+//   - msg (string): the log message.
+//   - args (...any): alternating keys and values annotating the record.
+func (s safeLogger) Debug(msg string, args ...any) {
+	defer func() {
+		_ = recover()
+	}()
+
+	s.logger.Debug(msg, args...)
+}
+
+// Info emits an informational record through the wrapped logger.
+//
+// Parameters:
+//   - msg (string): the log message.
+//   - args (...any): alternating keys and values annotating the record.
+func (s safeLogger) Info(msg string, args ...any) {
+	defer func() {
+		_ = recover()
+	}()
+
+	s.logger.Info(msg, args...)
+}
+
+// Warn emits a warning record through the wrapped logger.
+//
+// Parameters:
+//   - msg (string): the log message.
+//   - args (...any): alternating keys and values annotating the record.
+func (s safeLogger) Warn(msg string, args ...any) {
+	defer func() {
+		_ = recover()
+	}()
+
+	s.logger.Warn(msg, args...)
+}
+
+// Error emits a failure record through the wrapped logger.
+//
+// Parameters:
+//   - msg (string): the log message.
+//   - args (...any): alternating keys and values annotating the record.
+func (s safeLogger) Error(msg string, args ...any) {
+	defer func() {
+		_ = recover()
+	}()
+
+	s.logger.Error(msg, args...)
 }

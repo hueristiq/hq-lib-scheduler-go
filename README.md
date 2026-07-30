@@ -13,6 +13,7 @@
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Custom Schedules](#custom-schedules)
 	- [Error Handling](#error-handling)
+	- [Logging](#logging)
 - [Cron Expression Format](#cron-expression-format)
 - [Configuration](#configuration)
 - [Run Semantics](#run-semantics)
@@ -26,6 +27,7 @@
 - **Concurrent Execution:** Every activation fires its job in its own goroutine, optionally bounded by a concurrency limit, while overlapping runs of the same entry are skipped.
 - **Graceful Shutdown:** `Stop` cancels every per-run context and waits for in-flight runs, bounded by a caller-supplied context.
 - **Failure Reporting:** Returned errors and recovered panics are delivered to a configurable error handler — a panicking job never crashes the process.
+- **Structured Logging:** `WithLogger` plugs a structured logger into the scheduler's lifecycle, activation, and failure records.
 - **Introspection:** `Entries` exposes a snapshot of every registered job with its previous and next activation times.
 
 ## Installation
@@ -133,6 +135,16 @@ scheduler := hqgoscheduler.NewScheduler(
 )
 ```
 
+### Logging
+
+`WithLogger` registers a structured logger receiving the scheduler's lifecycle, activation, and failure records. The contract is a minimal interface — four leveled methods, each taking a message and alternating keys and values — so any existing logger adapts with a thin wrapper:
+
+```go
+scheduler := hqgoscheduler.NewScheduler(
+	hqgoscheduler.WithLogger(myLogger), // any implementation of logger.Logger
+)
+```
+
 ## Cron Expression Format
 
 A standard expression has five fields, separated by whitespace:
@@ -170,6 +182,7 @@ Behavior is set through functional options passed to `NewScheduler`. Any option 
 | `WithClock(fn)` | Time source of the scheduler. Exists primarily as a test seam; `nil` is ignored. | `time.Now` |
 | `WithMaxConcurrency(n)` | Maximum number of job runs executing concurrently; runs beyond the bound wait for a slot. Negative values are treated as zero. | `0` (unlimited) |
 | `WithErrorHandler(fn)` | Callback invoked for every failed run, with the entry snapshot and the error or recovered panic. | failures dropped |
+| `WithLogger(l)` | Structured logger receiving lifecycle, activation, and failure records. `nil` is ignored. | no logging |
 
 ## Run Semantics
 
