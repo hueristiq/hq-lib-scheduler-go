@@ -51,3 +51,6 @@ func (s IntervalSchedule) Next(after time.Time) (next time.Time) {
 
 	return
 }
+
+// IntervalSchedule satisfies the contract.
+var _ Schedule = IntervalSchedule{}

@@ -1,10 +1,12 @@
 package scheduler
 
 import (
+	"cmp"
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -14,20 +16,40 @@ import (
 // promptly.
 const maxSleepQuantum = time.Second
 
-// ErrorHandler is the callback invoked for every failed job run, receiving a
-// snapshot of the entry and the failure — a returned error or a recovered
-// panic.
+// ErrorEvent carries the data of one failed job run, delivered to the
+// [OnError] callback configured with [WithOnError].
 //
-// Invocation is synchronous, on the goroutine that ran the job: a slow
-// handler delays that goroutine's cleanup, never the scheduling loop. A
-// handler shared across schedulers must be safe for concurrent use.
-//
-// Parameters:
-//   - entry (Entry): a snapshot of the failed entry. When the entry was
+// Fields:
+//   - Entry (Entry): a snapshot of the failed entry. When the entry was
 //     removed while the run was in flight, the snapshot carries only the
 //     identifier and the job.
-//   - err (error): the failure; never nil.
-type ErrorHandler func(entry Entry, err error)
+//   - Err (error): the failure — the error the job returned, or its
+//     recovered panic; never nil.
+type ErrorEvent struct {
+	Entry Entry
+	Err   error
+}
+
+// OnError is the callback invoked for every failed job run, whether the
+// job returned an error or panicked (panics are recovered and delivered as
+// errors).
+//
+// Invocation is synchronous, on the goroutine that ran the job: a slow
+// callback delays that goroutine's cleanup — and therefore [Scheduler.Stop],
+// which waits for in-flight runs — but never the scheduling loop. The
+// callback must be safe for concurrent use: runs of different entries
+// execute concurrently even within a single scheduler.
+//
+// Failures include errors caused by [Scheduler.Stop] cancelling the per-run
+// context (e.g. [context.Canceled] from jobs that honor it); filter them in
+// the callback if shutdown noise is unwanted.
+//
+// A panicking callback is recovered and discarded, so a faulty observer
+// cannot crash the scheduler process.
+//
+// Parameters:
+//   - event (ErrorEvent): the failed run's entry snapshot and failure.
+type OnError func(event ErrorEvent)
 
 // options holds the configurable knobs of a [Scheduler], populated through
 // [OptionFunc] values passed to [NewScheduler].
@@ -39,14 +61,13 @@ type ErrorHandler func(entry Entry, err error)
 //     substitute it in tests to control scheduling deterministically.
 //   - maxConcurrency (int): the maximum number of job runs executing
 //     concurrently. Zero means unlimited.
-//   - errorHandler (ErrorHandler): invoked with the entry snapshot and the
-//     error (or recovered panic) of every failed run. Nil means failures are
-//     silently dropped.
+//   - onError (OnError): invoked with an [ErrorEvent] for every failed
+//     run. Nil means failures are silently dropped.
 type options struct {
 	location       *time.Location
 	clock          func() time.Time
 	maxConcurrency int
-	errorHandler   ErrorHandler
+	onError        OnError
 }
 
 // OptionFunc configures a [Scheduler] through the functional-options idiom.
@@ -112,18 +133,18 @@ func WithMaxConcurrency(n int) (of OptionFunc) {
 	return
 }
 
-// WithErrorHandler configures the callback invoked for every failed job run,
-// receiving a snapshot of the entry and the failure (including recovered
-// panics).
+// WithOnError configures the callback invoked for every failed job run,
+// receiving an [ErrorEvent] with the entry snapshot and the failure
+// (including recovered panics).
 //
 // Parameters:
-//   - h (ErrorHandler): the failure callback. Nil drops failures silently.
+//   - h (OnError): the failure callback. Nil drops failures silently.
 //
 // Returns:
 //   - of (OptionFunc): the option applying h.
-func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
+func WithOnError(h OnError) (of OptionFunc) {
 	of = func(opts *options) {
-		opts.errorHandler = h
+		opts.onError = h
 	}
 
 	return
@@ -135,9 +156,8 @@ func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
 // # Lifecycle
 //
 //  1. Construct with [NewScheduler], optionally passing [OptionFunc] values.
-//  2. Register jobs with [Scheduler.Add] (cron expression),
-//     [Scheduler.AddEvery] (fixed interval), or [Scheduler.AddSchedule]
-//     (custom [Schedule]); registration is possible both before and after
+//  2. Register jobs with [Scheduler.Register] (cron expression, descriptor, or
+//     `@every` interval); registration is possible both before and after
 //     start.
 //  3. Call [Scheduler.Start] to launch the scheduling loop (non-blocking).
 //  4. Call [Scheduler.Stop] to shut down gracefully: the loop halts, per-run
@@ -166,8 +186,16 @@ func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
 //   - clock (func() time.Time): the time source (test seam).
 //   - maxConcurrency (int): the concurrency bound; zero means unlimited.
 //   - sem (chan struct{}): the concurrency semaphore; nil when unlimited.
-//   - errorHandler (ErrorHandler): the failure callback.
-//   - entries (map[int]*entry): registered entries by identifier.
+//   - onError (OnError): the failure callback.
+//   - entries (map[int]*entry): registered entries by identifier; the source
+//     of truth for registration.
+//   - queue (entryHeap): min-heap of the scheduled entries keyed on their
+//     next activation, so the loop touches only due entries instead of
+//     scanning every registered one. Holds exactly the entries with a
+//     computed future activation.
+//   - pending ([]*entry): registered entries awaiting their first schedule
+//     evaluation by the loop — newly added ones, and every entry reset by
+//     [Scheduler.Stop].
 //   - nextID (int): the next entry identifier to hand out.
 //   - generation (int): identifies the active scheduling loop; bumped by
 //     every [Scheduler.Start] so a superseded loop exits instead of
@@ -184,8 +212,10 @@ type Scheduler struct {
 	clock          func() time.Time
 	maxConcurrency int
 	sem            chan struct{}
-	errorHandler   ErrorHandler
+	onError        OnError
 	entries        map[int]*entry
+	queue          entryHeap
+	pending        []*entry
 	nextID         int
 	generation     int
 	started        bool
@@ -216,7 +246,7 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 		location:       opts.location,
 		clock:          opts.clock,
 		maxConcurrency: opts.maxConcurrency,
-		errorHandler:   opts.errorHandler,
+		onError:        opts.onError,
 		entries:        make(map[int]*entry),
 		wake:           make(chan struct{}, 1),
 	}
@@ -228,73 +258,31 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 	return
 }
 
-// Add registers job to run on the schedule parsed from spec (see [Parse]).
+// Register registers job to run on the schedule parsed from spec (see [Parse]).
 //
 // Parameters:
 //   - spec (string): the cron expression, descriptor, or `@every` interval.
 //   - job (Job): the unit of work to register; must not be nil.
 //
 // Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
+//   - entryID (int): the identifier of the new entry, for [Scheduler.Unregister].
 //   - err (error): non-nil when spec fails to parse or job is nil.
-func (s *Scheduler) Add(spec string, job Job) (entryID int, err error) {
+func (s *Scheduler) Register(spec string, job Job) (entryID int, err error) {
 	schedule, err := Parse(spec)
 	if err != nil {
-		err = fmt.Errorf("scheduler.Add: parsing %q: %w", spec, err)
+		err = fmt.Errorf("scheduler.Register: parsing %q: %w", spec, err)
 
 		return
 	}
 
-	entryID, err = s.add(schedule, job)
+	entryID, err = s.register(schedule, job)
 
 	return
 }
 
-// AddEvery registers job to run at a fixed interval.
-//
-// Parameters:
-//   - every (time.Duration): the interval between runs; must be positive.
-//   - job (Job): the unit of work to register; must not be nil.
-//
-// Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
-//   - err (error): non-nil when every is non-positive or job is nil.
-func (s *Scheduler) AddEvery(every time.Duration, job Job) (entryID int, err error) {
-	if every <= 0 {
-		err = fmt.Errorf("scheduler.AddEvery: interval must be positive, got %s", every)
-
-		return
-	}
-
-	entryID, err = s.add(IntervalSchedule{Every: every}, job)
-
-	return
-}
-
-// AddSchedule registers job to run on a custom [Schedule] — for example one
-// parsed once with [Parse] and shared between entries, or a user-defined
-// [Schedule] implementation.
-//
-// Parameters:
-//   - schedule (Schedule): the schedule the job fires on; must not be nil.
-//   - job (Job): the unit of work to register; must not be nil.
-//
-// Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
-//   - err (error): non-nil when schedule or job is nil.
-func (s *Scheduler) AddSchedule(schedule Schedule, job Job) (entryID int, err error) {
-	if schedule == nil {
-		err = errors.New("scheduler.AddSchedule: schedule is nil")
-
-		return
-	}
-
-	entryID, err = s.add(schedule, job)
-
-	return
-}
-
-// add registers job under schedule and wakes the scheduling loop.
+// register registers job under schedule and wakes the scheduling loop. The
+// entry is queued for its first schedule evaluation rather than evaluated
+// here: [Schedule.Next] is user code and never runs while holding s.mu.
 //
 // Parameters:
 //   - schedule (Schedule): the schedule the job fires on.
@@ -303,9 +291,9 @@ func (s *Scheduler) AddSchedule(schedule Schedule, job Job) (entryID int, err er
 // Returns:
 //   - entryID (int): the identifier of the new entry.
 //   - err (error): non-nil when job is nil.
-func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
+func (s *Scheduler) register(schedule Schedule, job Job) (entryID int, err error) {
 	if job == nil {
-		err = errors.New("scheduler.add: job is nil")
+		err = errors.New("scheduler.register: job is nil")
 
 		return
 	}
@@ -316,11 +304,16 @@ func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
 
 	entryID = s.nextID
 
-	s.entries[entryID] = &entry{
-		id:       entryID,
-		job:      job,
-		schedule: schedule,
+	e := &entry{
+		id:        entryID,
+		job:       job,
+		schedule:  schedule,
+		heapIndex: -1,
+		queued:    true,
 	}
+
+	s.entries[entryID] = e
+	s.pending = append(s.pending, e)
 
 	s.mu.Unlock()
 
@@ -329,17 +322,24 @@ func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
 	return
 }
 
-// Remove unregisters the entry with the given identifier. Removing an
-// unknown identifier is a no-op. An in-flight run of the removed entry is
-// not interrupted.
+// Unregister unregisters the entry with the given identifier. Unregistering
+// an unknown identifier is a no-op. An in-flight run of the unregistered
+// entry is not interrupted.
 //
 // Parameters:
-//   - entryID (int): the identifier returned by [Scheduler.Add],
-//     [Scheduler.AddEvery], or [Scheduler.AddSchedule].
-func (s *Scheduler) Remove(entryID int) {
+//   - entryID (int): the identifier returned by [Scheduler.Register].
+func (s *Scheduler) Unregister(entryID int) {
 	s.mu.Lock()
 
-	delete(s.entries, entryID)
+	e, existed := s.entries[entryID]
+
+	if existed {
+		delete(s.entries, entryID)
+
+		if e.heapIndex >= 0 {
+			heap.Remove(&s.queue, e.heapIndex)
+		}
+	}
 
 	s.mu.Unlock()
 
@@ -355,15 +355,17 @@ func (s *Scheduler) Remove(entryID int) {
 func (s *Scheduler) Entries() (entries []Entry) {
 	s.mu.Lock()
 
-	defer s.mu.Unlock()
-
 	entries = make([]Entry, 0, len(s.entries))
 
 	for _, e := range s.entries {
 		entries = append(entries, e.snapshot())
 	}
 
-	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	s.mu.Unlock()
+
+	// Sort after releasing the lock: the comparator is cheap but the loop
+	// holds the same mutex, so the critical section stays minimal.
+	slices.SortFunc(entries, func(a, b Entry) int { return cmp.Compare(a.ID, b.ID) })
 
 	return
 }
@@ -455,10 +457,21 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 
 	s.mu.Lock()
 
+	// Reset every entry to its unevaluated state so a later [Scheduler.Start]
+	// reschedules all of them from the current time.
 	for _, e := range s.entries {
 		e.running = false
 		e.next = time.Time{}
+		e.heapIndex = -1
+
+		if !e.queued {
+			e.queued = true
+
+			s.pending = append(s.pending, e)
+		}
 	}
+
+	s.queue = s.queue[:0]
 
 	s.mu.Unlock()
 
@@ -485,8 +498,114 @@ func (s *Scheduler) now() (now time.Time) {
 	return
 }
 
-// loop is the scheduling loop: it fires due entries, then sleeps until the
-// earliest next activation, a wake-up signal, or shutdown.
+// nextActivation carries an entry's freshly computed next activation from
+// the scheduling loop's unlocked evaluation phase back into its critical
+// section.
+//
+// Fields:
+//   - entry (*entry): the entry the activation was computed for.
+//   - next (time.Time): the activation computed by the entry's schedule.
+type nextActivation struct {
+	entry *entry
+	next  time.Time
+}
+
+// entryHeap is a min-heap of entries keyed on their next activation time,
+// implementing [heap.Interface]. It is not safe for concurrent use on its
+// own: every operation happens under [Scheduler.mu].
+type entryHeap []*entry
+
+// Len returns the number of entries in the heap.
+//
+// Returns:
+//   - n (int): the heap size.
+func (h entryHeap) Len() (n int) {
+	n = len(h)
+
+	return
+}
+
+// Less reports whether the entry at i activates before the entry at j,
+// breaking activation-time ties by entry identifier for determinism.
+//
+// Parameters:
+//   - i (int): the index of the first entry.
+//   - j (int): the index of the second entry.
+//
+// Returns:
+//   - less (bool): true when the entry at i orders before the entry at j.
+func (h entryHeap) Less(i, j int) (less bool) {
+	if h[i].next.Equal(h[j].next) {
+		less = h[i].id < h[j].id
+
+		return
+	}
+
+	less = h[i].next.Before(h[j].next)
+
+	return
+}
+
+// Swap swaps the entries at i and j, keeping their heap indices in sync.
+//
+// Parameters:
+//   - i (int): the index of the first entry.
+//   - j (int): the index of the second entry.
+func (h entryHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+
+// Push appends x, which must be an [*entry], to the heap.
+//
+// Parameters:
+//   - x (any): the entry to append.
+func (h *entryHeap) Push(x any) {
+	e := x.(*entry)
+
+	e.heapIndex = len(*h)
+
+	*h = append(*h, e)
+}
+
+// Pop removes and returns the last entry of the heap; [heap.Pop] moves the
+// minimum to the end before calling it.
+//
+// Returns:
+//   - x (any): the removed entry.
+func (h *entryHeap) Pop() (x any) {
+	old := *h
+
+	n := len(old)
+
+	e := old[n-1]
+	old[n-1] = nil
+	e.heapIndex = -1
+
+	*h = old[:n-1]
+
+	x = e
+
+	return
+}
+
+// loop is the scheduling loop: it fires every due entry, recomputes the
+// affected schedules, then sleeps until the earliest scheduled activation, a
+// wake-up signal, or shutdown.
+//
+// Scheduled entries live in a min-heap keyed on their next activation, so an
+// iteration touches only the entries that are actually due instead of
+// scanning every registered entry. [Schedule.Next] is user-supplied code and
+// is NEVER invoked while holding s.mu — a schedule calling back into the
+// scheduler must not deadlock it: due entries are popped and unevaluated
+// entries collected under the lock, their next activations are computed
+// after the lock is released, and the results are applied under a second
+// critical section that skips entries removed in the meantime and applies
+// nothing when the loop was superseded (the stop that superseded it already
+// re-queued every entry). An entry whose schedule reports no future
+// activation stays out of the heap until the next [Scheduler.Stop]–
+// [Scheduler.Start] cycle re-evaluates every entry.
 //
 // The generation identifies the [Scheduler.Start] call the loop belongs to:
 // when a restart supersedes it, the loop exits instead of double-firing
@@ -510,31 +629,83 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 
 		now := s.now()
 
+		// Pop every due entry off the heap; a popped entry stays out of the
+		// heap until its next activation is recomputed and applied below.
+		var due []*entry
+
+		for len(s.queue) > 0 && !s.queue[0].next.After(now) {
+			e := heap.Pop(&s.queue).(*entry)
+
+			due = append(due, e)
+		}
+
+		// Fire each due entry in its own goroutine, dropping the activation
+		// when the previous run is still in flight. Fired or dropped, the
+		// entry is rescheduled from now, outside the lock.
+		reschedule := make([]*entry, 0, len(due)+len(s.pending))
+
+		for _, e := range due {
+			if !e.running {
+				e.running = true
+				e.previous = e.next
+
+				s.wg.Add(1)
+
+				go s.runJob(e.id, e.job, runCtx)
+			}
+
+			e.next = time.Time{}
+
+			reschedule = append(reschedule, e)
+		}
+
+		// Collect the entries awaiting their first schedule evaluation —
+		// newly added ones and every entry reset by [Scheduler.Stop].
+		for _, e := range s.pending {
+			e.queued = false
+
+			reschedule = append(reschedule, e)
+		}
+
+		s.pending = nil
+
+		s.mu.Unlock()
+
+		// Compute the next activations WITHOUT holding the lock:
+		// [Schedule.Next] is user code and may call back into the scheduler.
+		updates := make([]nextActivation, 0, len(reschedule))
+
+		for _, e := range reschedule {
+			updates = append(updates, nextActivation{entry: e, next: e.schedule.Next(now)})
+		}
+
+		s.mu.Lock()
+
+		// Apply the recomputed activations, skipping entries removed while
+		// the lock was released.
+		current := s.started && s.generation == generation && runCtx.Err() == nil
+
+		for _, u := range updates {
+			if !current {
+				break
+			}
+
+			e, ok := s.entries[u.entry.id]
+			if !ok || e != u.entry {
+				continue
+			}
+
+			e.next = u.next
+
+			if !e.next.IsZero() {
+				heap.Push(&s.queue, e)
+			}
+		}
+
 		var earliest time.Time
 
-		for _, e := range s.entries {
-			if e.next.IsZero() {
-				e.next = e.schedule.Next(now)
-			}
-
-			if !e.next.IsZero() && !e.next.After(now) {
-				if !e.running {
-					e.running = true
-					e.previous = e.next
-
-					s.wg.Add(1)
-
-					go s.runJob(e.id, e.job, runCtx)
-				}
-
-				// Reschedule from now; an activation skipped because the
-				// previous run is still in flight is dropped.
-				e.next = e.schedule.Next(now)
-			}
-
-			if !e.next.IsZero() && (earliest.IsZero() || e.next.Before(earliest)) {
-				earliest = e.next
-			}
+		if len(s.queue) > 0 {
+			earliest = s.queue[0].next
 		}
 
 		s.mu.Unlock()
@@ -579,7 +750,7 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 
 // runJob executes one run of the entry identified by id in its own
 // goroutine, honoring the concurrency semaphore, recovering panics, and
-// reporting failures to the configured error handler.
+// reporting failures to the configured [OnError] callback.
 //
 // Parameters:
 //   - id (int): the entry identifier (used to clear the in-flight flag).
@@ -588,6 +759,8 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 //     context derives from.
 func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 	defer s.wg.Done()
+
+	name := job.Name()
 
 	ctx, cancel := context.WithCancel(parent)
 
@@ -606,13 +779,25 @@ func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 		}
 	}
 
-	err := runJobSafely(ctx, job)
+	err := runJobSafely(ctx, job, name)
 
 	snapshot := s.finishRun(id, job)
 
-	if err != nil && s.errorHandler != nil {
-		s.errorHandler(snapshot, err)
+	if err != nil && s.onError != nil {
+		deliverError(s.onError, &ErrorEvent{Entry: snapshot, Err: err})
 	}
+}
+
+// deliverError reports ev to h, recovering and discarding any panic so a
+// faulty callback cannot crash the scheduler process.
+//
+// Parameters:
+//   - h (OnError): the failure callback to invoke.
+//   - ev (*ErrorEvent): the failed run's entry snapshot and failure.
+func deliverError(h OnError, ev *ErrorEvent) {
+	defer func() { _ = recover() }()
+
+	h(*ev)
 }
 
 // finishRun clears the in-flight flag of the entry identified by id and
@@ -648,14 +833,12 @@ func (s *Scheduler) finishRun(id int, job Job) (snapshot Entry) {
 // Parameters:
 //   - ctx (context.Context): the per-run context.
 //   - job (Job): the unit of work to execute.
+//   - name (string): the job name, resolved by the caller so the panic path
+//     never calls Name on possibly corrupted job state.
 //
 // Returns:
 //   - err (error): the error the job returned, or the recovered panic.
-func runJobSafely(ctx context.Context, job Job) (err error) {
-	// Resolve the name up front so the panic path never calls Name on
-	// possibly corrupted job state.
-	name := job.Name()
-
+func runJobSafely(ctx context.Context, job Job, name string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("scheduler.runJob: job %q panicked: %v", name, recovered)

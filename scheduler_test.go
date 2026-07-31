@@ -47,7 +47,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-func TestScheduler_AddAndEntries(t *testing.T) {
+func TestScheduler_RegisterAndEntries(t *testing.T) {
 	t.Parallel()
 
 	clock := newFakeClock(time.Date(2025, time.January, 15, 10, 30, 0, 0, time.UTC))
@@ -61,11 +61,11 @@ func TestScheduler_AddAndEntries(t *testing.T) {
 		return
 	}))
 
-	id1, err := scheduler.Add("0 12 * * *", job)
+	id1, err := scheduler.Register("0 12 * * *", job)
 	require.NoError(t, err)
 	require.Positive(t, id1)
 
-	id2, err := scheduler.AddEvery(time.Minute, job)
+	id2, err := scheduler.Register("@every 1m", job)
 	require.NoError(t, err)
 	require.NotEqual(t, id1, id2)
 
@@ -94,18 +94,18 @@ func TestScheduler_AddAndEntries(t *testing.T) {
 	require.Equal(t, time.Date(2025, time.January, 15, 12, 0, 0, 0, time.UTC), entries[0].Next)
 	require.Equal(t, clock.Now().Add(time.Minute), entries[1].Next)
 
-	scheduler.Remove(id1)
+	scheduler.Unregister(id1)
 
 	entries = scheduler.Entries()
 	require.Len(t, entries, 1)
 	require.Equal(t, id2, entries[0].ID)
 
-	// Removing an unknown identifier is a no-op.
-	scheduler.Remove(9999)
+	// Unregistering an unknown identifier is a no-op.
+	scheduler.Unregister(9999)
 	require.Len(t, scheduler.Entries(), 1)
 }
 
-func TestScheduler_AddValidation(t *testing.T) {
+func TestScheduler_RegisterValidation(t *testing.T) {
 	t.Parallel()
 
 	scheduler := hqgoscheduler.NewScheduler()
@@ -114,54 +114,12 @@ func TestScheduler_AddValidation(t *testing.T) {
 		return
 	}))
 
-	_, err := scheduler.Add("not a spec", job)
+	_, err := scheduler.Register("not a spec", job)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "scheduler.Add")
+	require.Contains(t, err.Error(), "scheduler.Register")
 
-	_, err = scheduler.AddEvery(0, job)
+	_, err = scheduler.Register("0 12 * * *", nil)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "scheduler.AddEvery")
-
-	_, err = scheduler.AddEvery(-time.Second, job)
-	require.Error(t, err)
-
-	_, err = scheduler.AddEvery(time.Second, nil)
-	require.Error(t, err)
-
-	_, err = scheduler.AddSchedule(nil, job)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "scheduler.AddSchedule")
-
-	_, err = scheduler.AddSchedule(hqgoscheduler.IntervalSchedule{Every: time.Second}, nil)
-	require.Error(t, err)
-}
-
-func TestScheduler_AddSchedule(t *testing.T) {
-	t.Parallel()
-
-	scheduler := hqgoscheduler.NewScheduler()
-
-	var runs atomic.Int32
-
-	_, err := scheduler.AddSchedule(
-		hqgoscheduler.IntervalSchedule{Every: 20 * time.Millisecond},
-		hqgoscheduler.NewJob("custom", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
-			runs.Add(1)
-
-			return
-		})),
-	)
-	require.NoError(t, err)
-
-	scheduler.Start(t.Context())
-
-	require.Eventually(t, func() (ok bool) {
-		ok = runs.Load() >= 2
-
-		return
-	}, 3*time.Second, 5*time.Millisecond)
-
-	require.NoError(t, scheduler.Stop(t.Context()))
 }
 
 func TestScheduler_RunsJobs(t *testing.T) {
@@ -171,7 +129,7 @@ func TestScheduler_RunsJobs(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.AddEvery(20*time.Millisecond, hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 20ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -204,7 +162,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 		inFlight    atomic.Int32
 	)
 
-	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("slow", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("slow", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		current := inFlight.Add(1)
 
 		for {
@@ -238,7 +196,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 	require.GreaterOrEqual(t, runs.Load(), int32(1))
 }
 
-func TestScheduler_ErrorHandler(t *testing.T) {
+func TestScheduler_OnError(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -247,25 +205,25 @@ func TestScheduler_ErrorHandler(t *testing.T) {
 		entries  []hqgoscheduler.Entry
 	)
 
-	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithErrorHandler(func(entry hqgoscheduler.Entry, err error) {
+	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
 		mu.Lock()
 
 		defer mu.Unlock()
 
-		failures = append(failures, err)
-		entries = append(entries, entry)
+		failures = append(failures, ev.Err)
+		entries = append(entries, ev.Entry)
 	}))
 
 	boom := errors.New("boom")
 
-	_, err := scheduler.AddEvery(15*time.Millisecond, hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		err = boom
 
 		return
 	})))
 	require.NoError(t, err)
 
-	_, err = scheduler.AddEvery(15*time.Millisecond, hqgoscheduler.NewJob("panicking", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err = scheduler.Register("@every 15ms", hqgoscheduler.NewJob("panicking", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		panic("kaput")
 	})))
 	require.NoError(t, err)
@@ -306,6 +264,36 @@ func TestScheduler_ErrorHandler(t *testing.T) {
 	require.NotEmpty(t, entries[0].Job.Name())
 }
 
+func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
+	t.Parallel()
+
+	var runs atomic.Int32
+
+	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(_ hqgoscheduler.ErrorEvent) {
+		panic("observer kaput")
+	}))
+
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		runs.Add(1)
+
+		err = errors.New("boom")
+
+		return
+	})))
+	require.NoError(t, err)
+
+	scheduler.Start(t.Context())
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Reaching Stop at all proves the panicking callback was recovered: an
+	// unrecovered panic would kill the test binary.
+	require.NoError(t, scheduler.Stop(t.Context()))
+
+	// The scheduling loop was unaffected: the failing job kept firing.
+	require.Greater(t, runs.Load(), int32(1))
+}
+
 func TestScheduler_StopCancelsPerRunContext(t *testing.T) {
 	t.Parallel()
 
@@ -313,7 +301,7 @@ func TestScheduler_StopCancelsPerRunContext(t *testing.T) {
 
 	started := make(chan struct{})
 
-	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("blocking", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("blocking", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		select {
 		case <-started:
 		default:
@@ -348,7 +336,7 @@ func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 
 	started := make(chan struct{})
 
-	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("stubborn", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("stubborn", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		select {
 		case <-started:
 		default:
@@ -406,10 +394,10 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 		return
 	})
 
-	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("one", work))
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("one", work))
 	require.NoError(t, err)
 
-	_, err = scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("two", work))
+	_, err = scheduler.Register("@every 10ms", hqgoscheduler.NewJob("two", work))
 	require.NoError(t, err)
 
 	scheduler.Start(t.Context())
@@ -443,7 +431,7 @@ func TestScheduler_Restart(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.AddEvery(15*time.Millisecond, hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -480,7 +468,7 @@ func TestScheduler_StartWithCancelledContext(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("never", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("never", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -514,7 +502,7 @@ func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
 
 	fired := make(chan struct{}, 1)
 
-	_, err := scheduler.Add("*/1 * * * *", hqgoscheduler.NewJob("minutely", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("*/1 * * * *", hqgoscheduler.NewJob("minutely", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		select {
 		case fired <- struct{}{}:
 		default:

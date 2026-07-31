@@ -21,9 +21,9 @@
 //
 // # The Scheduler
 //
-// [NewScheduler] creates a [Scheduler]. [Scheduler.Add] registers a job on a cron
-// expression, [Scheduler.AddEvery] on a fixed interval, and [Scheduler.AddSchedule] on a
-// custom [Schedule]; registration is possible both before and after start.
+// [NewScheduler] creates a [Scheduler]. [Scheduler.Register] registers a job on a cron
+// expression, descriptor, or `@every` interval; registration is possible both before
+// and after start.
 // [Scheduler.Start] launches the scheduling loop in its own goroutine, and
 // [Scheduler.Stop] shuts it down gracefully: the loop halts, every per-run context is
 // cancelled, and in-flight runs are awaited. [Scheduler.Entries] returns a snapshot of
@@ -35,7 +35,7 @@
 // semaphore. Overlapping runs of the same entry are skipped: if the previous run is still
 // in flight when the next activation arrives, that activation is dropped and the entry is
 // rescheduled. A panicking job is recovered and reported — together with returned
-// errors — to the [WithErrorHandler] callback.
+// errors — to the [WithOnError] callback.
 //
 // # Configuration
 //
@@ -44,7 +44,7 @@
 //   - [WithLocation] sets the location cron expressions are evaluated in.
 //   - [WithClock] substitutes the time source, primarily as a test seam.
 //   - [WithMaxConcurrency] bounds how many job runs execute concurrently.
-//   - [WithErrorHandler] registers the callback invoked for every failed run.
+//   - [WithOnError] registers the callback invoked for every failed run.
 //
 // # Concurrency
 //
