@@ -13,20 +13,17 @@
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Custom Schedules](#custom-schedules)
 	- [Error Handling](#error-handling)
-- [Cron Expression Format](#cron-expression-format)
 - [Configuration](#configuration)
-- [Run Semantics](#run-semantics)
 - [Contributing](#contributing)
 - [Licensing](#licensing)
 
 ## Features
 
-- **Standard Cron Expressions:** Full 5-field syntax with wildcards, steps, ranges, lists, names, and dom/dow OR-semantics.
-- **Descriptors & Intervals:** `@daily`, `@hourly`, and friends, plus `@every <duration>` for plain intervals.
-- **Concurrent Execution:** Each activation runs in its own goroutine, with an optional concurrency limit; overlapping runs are skipped.
-- **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs.
-- **Failure Reporting:** Errors and panics go to a configurable handler; a panicking job never crashes the process.
+- **Standard Cron Expressions Support:** Full 5-field syntax with wildcards, steps, ranges, lists, names, and dom/dow OR-semantics.
+- **Descriptors & Intervals Support:** `@daily`, `@hourly`, and friends, plus `@every <duration>` for plain intervals.
+- **Concurrent Execution:** Each activation runs in its own goroutine; overlapping runs are skipped.
 - **Introspection:** `Entries` snapshots registered jobs with previous and next activation times.
+- **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs.
 
 ## Installation
 
@@ -62,10 +59,13 @@ import (
 func main() {
 	scheduler := hqgoscheduler.NewScheduler(
 		hqgoscheduler.WithLocation(time.UTC),
-		hqgoscheduler.WithErrorHandler(func(entry hqgoscheduler.Entry, err error) {
-			fmt.Printf("job %q failed: %v\n", entry.Job.Name(), err)
+		hqgoscheduler.WithOnError(func(event hqgoscheduler.ErrorEvent) {
+			fmt.Printf("job %q failed: %v\n", event.Entry.Job.Name(), event.Err)
 		}),
 	)
+
+	// Every weekday at 09:30 UTC.
+	schedule := "30 9 * * MON-FRI"
 
 	job := hqgoscheduler.NewJob("report", func(ctx context.Context) error {
 		fmt.Println("generating report...")
@@ -73,8 +73,7 @@ func main() {
 		return nil
 	})
 
-	// Every weekday at 09:30 UTC.
-	id, err := scheduler.Add("30 9 * * MON-FRI", job)
+	id, err := scheduler.Add(schedule, job)
 	if err != nil {
 		panic(err)
 	}
@@ -123,42 +122,15 @@ _, _ = scheduler.AddSchedule(schedule, hqgoscheduler.NewJob("monthly-b", runB))
 
 ### Error Handling
 
-`WithErrorHandler` receives a snapshot of the entry and the failure — a returned error or a recovered panic — for every failed run:
+`WithOnError` receives an `ErrorEvent` — a snapshot of the entry and the failure, a returned error or a recovered panic — for every failed run:
 
 ```go
 scheduler := hqgoscheduler.NewScheduler(
-	hqgoscheduler.WithErrorHandler(func(entry hqgoscheduler.Entry, err error) {
-		metrics.Incr("scheduler.job.failed", "name", entry.Job.Name())
+	hqgoscheduler.WithOnError(func(event hqgoscheduler.ErrorEvent) {
+		metrics.Incr("scheduler.job.failed", "name", event.Entry.Job.Name())
 	}),
 )
 ```
-
-## Cron Expression Format
-
-A standard expression has five fields, separated by whitespace:
-
-```
-┌───────────── minute (0-59)
-│ ┌───────────── hour (0-23)
-│ │ ┌───────────── day of month (1-31)
-│ │ │ ┌───────────── month (1-12 or JAN-DEC)
-│ │ │ │ ┌───────────── day of week (0-7 or SUN-SAT; 0 and 7 are Sunday)
-│ │ │ │ │
-* * * * *
-```
-
-| Syntax | Meaning |
-| --- | --- |
-| `*` | every value |
-| `?` | alias for `*` in the day-of-month and day-of-week fields |
-| `*/n` | every `n` values, starting from the field minimum |
-| `a` | the single value `a` |
-| `a-b` | every value from `a` through `b` |
-| `a-b/n` | every `n` values from `a` through `b` |
-| `a/n` | every `n` values from `a` through the field maximum |
-| `a,b,c` | any of the listed items (items may be any of the above) |
-
-When both the day-of-month and day-of-week fields are restricted, a day matches if **either** field matches (standard cron OR-semantics). Activations are minute-granular and are evaluated in the location configured with `WithLocation`.
 
 ## Configuration
 
@@ -169,15 +141,7 @@ Behavior is set through functional options passed to `NewScheduler`. Any option 
 | `WithLocation(loc)` | Location cron expressions are evaluated in. `nil` is ignored. | `time.Local` |
 | `WithClock(fn)` | Time source of the scheduler. Exists primarily as a test seam; `nil` is ignored. | `time.Now` |
 | `WithMaxConcurrency(n)` | Maximum number of job runs executing concurrently; runs beyond the bound wait for a slot. Negative values are treated as zero. | `0` (unlimited) |
-| `WithErrorHandler(fn)` | Callback invoked for every failed run, with the entry snapshot and the error or recovered panic. | failures dropped |
-
-## Run Semantics
-
-- Each entry's next activation is computed with `Schedule.Next`, strictly after the current time; the loop sleeps until the earliest activation.
-- On fire, the job runs in its own goroutine with a per-run context cancelled by `Stop`.
-- Overlapping runs of the same entry are **skipped**: if the previous run is still in flight when the next activation arrives, that activation is dropped and the entry is rescheduled.
-- `Stop` halts the loop, cancels per-run contexts, and waits for in-flight runs until they finish or the provided context expires.
-- A stopped scheduler may be started again: `Start` after `Stop` launches a fresh loop and reschedules every entry from the current time.
+| `WithOnError(fn)` | Callback invoked for every failed run, receiving a ErrorEvent with the entry snapshot and the error or recovered panic. | failures dropped |
 
 ## Contributing
 

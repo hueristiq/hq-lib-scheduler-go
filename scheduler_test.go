@@ -238,7 +238,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 	require.GreaterOrEqual(t, runs.Load(), int32(1))
 }
 
-func TestScheduler_ErrorHandler(t *testing.T) {
+func TestScheduler_OnError(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -247,13 +247,13 @@ func TestScheduler_ErrorHandler(t *testing.T) {
 		entries  []hqgoscheduler.Entry
 	)
 
-	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithErrorHandler(func(entry hqgoscheduler.Entry, err error) {
+	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
 		mu.Lock()
 
 		defer mu.Unlock()
 
-		failures = append(failures, err)
-		entries = append(entries, entry)
+		failures = append(failures, ev.Err)
+		entries = append(entries, ev.Entry)
 	}))
 
 	boom := errors.New("boom")
@@ -304,6 +304,36 @@ func TestScheduler_ErrorHandler(t *testing.T) {
 	require.True(t, sawPanic)
 	require.NotEmpty(t, entries)
 	require.NotEmpty(t, entries[0].Job.Name())
+}
+
+func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
+	t.Parallel()
+
+	var runs atomic.Int32
+
+	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(_ hqgoscheduler.ErrorEvent) {
+		panic("observer kaput")
+	}))
+
+	_, err := scheduler.AddEvery(10*time.Millisecond, hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		runs.Add(1)
+
+		err = errors.New("boom")
+
+		return
+	})))
+	require.NoError(t, err)
+
+	scheduler.Start(t.Context())
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Reaching Stop at all proves the panicking callback was recovered: an
+	// unrecovered panic would kill the test binary.
+	require.NoError(t, scheduler.Stop(t.Context()))
+
+	// The scheduling loop was unaffected: the failing job kept firing.
+	require.Greater(t, runs.Load(), int32(1))
 }
 
 func TestScheduler_StopCancelsPerRunContext(t *testing.T) {

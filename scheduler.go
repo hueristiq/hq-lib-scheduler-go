@@ -16,20 +16,40 @@ import (
 // promptly.
 const maxSleepQuantum = time.Second
 
-// ErrorHandler is the callback invoked for every failed job run, receiving a
-// snapshot of the entry and the failure — a returned error or a recovered
-// panic.
+// ErrorEvent carries the data of one failed job run, delivered to the
+// [OnError] callback configured with [WithOnError].
 //
-// Invocation is synchronous, on the goroutine that ran the job: a slow
-// handler delays that goroutine's cleanup, never the scheduling loop. A
-// handler shared across schedulers must be safe for concurrent use.
-//
-// Parameters:
-//   - entry (Entry): a snapshot of the failed entry. When the entry was
+// Fields:
+//   - Entry (Entry): a snapshot of the failed entry. When the entry was
 //     removed while the run was in flight, the snapshot carries only the
 //     identifier and the job.
-//   - err (error): the failure; never nil.
-type ErrorHandler func(entry Entry, err error)
+//   - Err (error): the failure — the error the job returned, or its
+//     recovered panic; never nil.
+type ErrorEvent struct {
+	Entry Entry
+	Err   error
+}
+
+// OnError is the callback invoked for every failed job run, whether the
+// job returned an error or panicked (panics are recovered and delivered as
+// errors).
+//
+// Invocation is synchronous, on the goroutine that ran the job: a slow
+// callback delays that goroutine's cleanup — and therefore [Scheduler.Stop],
+// which waits for in-flight runs — but never the scheduling loop. The
+// callback must be safe for concurrent use: runs of different entries
+// execute concurrently even within a single scheduler.
+//
+// Failures include errors caused by [Scheduler.Stop] cancelling the per-run
+// context (e.g. [context.Canceled] from jobs that honor it); filter them in
+// the callback if shutdown noise is unwanted.
+//
+// A panicking callback is recovered and discarded, so a faulty observer
+// cannot crash the scheduler process.
+//
+// Parameters:
+//   - event (ErrorEvent): the failed run's entry snapshot and failure.
+type OnError func(event ErrorEvent)
 
 // options holds the configurable knobs of a [Scheduler], populated through
 // [OptionFunc] values passed to [NewScheduler].
@@ -41,14 +61,13 @@ type ErrorHandler func(entry Entry, err error)
 //     substitute it in tests to control scheduling deterministically.
 //   - maxConcurrency (int): the maximum number of job runs executing
 //     concurrently. Zero means unlimited.
-//   - errorHandler (ErrorHandler): invoked with the entry snapshot and the
-//     error (or recovered panic) of every failed run. Nil means failures are
-//     silently dropped.
+//   - onError (OnError): invoked with an [ErrorEvent] for every failed
+//     run. Nil means failures are silently dropped.
 type options struct {
 	location       *time.Location
 	clock          func() time.Time
 	maxConcurrency int
-	errorHandler   ErrorHandler
+	onError        OnError
 }
 
 // OptionFunc configures a [Scheduler] through the functional-options idiom.
@@ -114,18 +133,18 @@ func WithMaxConcurrency(n int) (of OptionFunc) {
 	return
 }
 
-// WithErrorHandler configures the callback invoked for every failed job run,
-// receiving a snapshot of the entry and the failure (including recovered
-// panics).
+// WithOnError configures the callback invoked for every failed job run,
+// receiving an [ErrorEvent] with the entry snapshot and the failure
+// (including recovered panics).
 //
 // Parameters:
-//   - h (ErrorHandler): the failure callback. Nil drops failures silently.
+//   - h (OnError): the failure callback. Nil drops failures silently.
 //
 // Returns:
 //   - of (OptionFunc): the option applying h.
-func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
+func WithOnError(h OnError) (of OptionFunc) {
 	of = func(opts *options) {
-		opts.errorHandler = h
+		opts.onError = h
 	}
 
 	return
@@ -168,7 +187,7 @@ func WithErrorHandler(h ErrorHandler) (of OptionFunc) {
 //   - clock (func() time.Time): the time source (test seam).
 //   - maxConcurrency (int): the concurrency bound; zero means unlimited.
 //   - sem (chan struct{}): the concurrency semaphore; nil when unlimited.
-//   - errorHandler (ErrorHandler): the failure callback.
+//   - onError (OnError): the failure callback.
 //   - entries (map[int]*entry): registered entries by identifier; the source
 //     of truth for registration.
 //   - queue (entryHeap): min-heap of the scheduled entries keyed on their
@@ -194,7 +213,7 @@ type Scheduler struct {
 	clock          func() time.Time
 	maxConcurrency int
 	sem            chan struct{}
-	errorHandler   ErrorHandler
+	onError        OnError
 	entries        map[int]*entry
 	queue          entryHeap
 	pending        []*entry
@@ -228,7 +247,7 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 		location:       opts.location,
 		clock:          opts.clock,
 		maxConcurrency: opts.maxConcurrency,
-		errorHandler:   opts.errorHandler,
+		onError:        opts.onError,
 		entries:        make(map[int]*entry),
 		wake:           make(chan struct{}, 1),
 	}
@@ -777,7 +796,7 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 
 // runJob executes one run of the entry identified by id in its own
 // goroutine, honoring the concurrency semaphore, recovering panics, and
-// reporting failures to the configured error handler.
+// reporting failures to the configured [OnError] callback.
 //
 // Parameters:
 //   - id (int): the entry identifier (used to clear the in-flight flag).
@@ -810,9 +829,21 @@ func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 
 	snapshot := s.finishRun(id, job)
 
-	if err != nil && s.errorHandler != nil {
-		s.errorHandler(snapshot, err)
+	if err != nil && s.onError != nil {
+		deliverError(s.onError, &ErrorEvent{Entry: snapshot, Err: err})
 	}
+}
+
+// deliverError reports ev to h, recovering and discarding any panic so a
+// faulty callback cannot crash the scheduler process.
+//
+// Parameters:
+//   - h (OnError): the failure callback to invoke.
+//   - ev (*ErrorEvent): the failed run's entry snapshot and failure.
+func deliverError(h OnError, ev *ErrorEvent) {
+	defer func() { _ = recover() }()
+
+	h(*ev)
 }
 
 // finishRun clears the in-flight flag of the entry identified by id and
