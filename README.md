@@ -11,7 +11,6 @@
 - [Usage](#usage)
 	- [Scheduling a Job](#scheduling-a-job)
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
-	- [Custom Schedules](#custom-schedules)
 	- [Error Handling](#error-handling)
 - [Configuration](#configuration)
 - [Contributing](#contributing)
@@ -43,7 +42,7 @@ import hqgoscheduler "github.com/hueristiq/hq-lib-scheduler-go"
 
 ### Scheduling a Job
 
-Register a job on a cron expression with `Add`, start the scheduler, and stop it gracefully on shutdown:
+Schedule a job on a cron expression with `Register`, start the scheduler, and stop it gracefully on shutdown:
 
 ```go
 package main
@@ -73,7 +72,7 @@ func main() {
 		return nil
 	})
 
-	id, err := scheduler.Add(schedule, job)
+	id, err := scheduler.Register(schedule, job)
 	if err != nil {
 		panic(err)
 	}
@@ -94,30 +93,15 @@ func main() {
 }
 ```
 
-Registration is also possible after `Start`, and `Remove(id)` unregisters an entry at any time.
+Registration is also possible after `Start`, and `Unregister(id)` unregisters an entry at any time.
 
 ### Descriptors & Fixed Intervals
 
-Named descriptors cover the common cases, and `@every` (or `AddEvery`) covers plain intervals:
+Named descriptors cover the common cases, and `@every` covers plain intervals:
 
 ```go
-_, _ = scheduler.Add("@hourly", job)                  // top of every hour
-_, _ = scheduler.Add("@every 30s", job)               // every 30 seconds
-_, _ = scheduler.AddEvery(5*time.Minute, job)         // every 5 minutes, no parsing
-```
-
-### Custom Schedules
-
-Anything implementing the one-method `Schedule` interface can drive an entry via `AddSchedule` — including a spec parsed once and shared between entries:
-
-```go
-schedule, err := hqgoscheduler.Parse("0 0 1 * *")
-if err != nil {
-	panic(err)
-}
-
-_, _ = scheduler.AddSchedule(schedule, hqgoscheduler.NewJob("monthly-a", runA))
-_, _ = scheduler.AddSchedule(schedule, hqgoscheduler.NewJob("monthly-b", runB))
+_, _ = scheduler.Register("@hourly", job)                  // top of every hour
+_, _ = scheduler.Register("@every 30s", job)               // every 30 seconds
 ```
 
 ### Error Handling

@@ -3,7 +3,6 @@ package scheduler_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	hqgoscheduler "github.com/hueristiq/hq-lib-scheduler-go"
 )
@@ -20,14 +19,14 @@ func BenchmarkSchedulerFireAmongMany(b *testing.B) {
 	}))
 
 	for range 50000 {
-		if _, err := scheduler.AddEvery(time.Hour, idle); err != nil {
+		if _, err := scheduler.Register("@every 1h", idle); err != nil {
 			b.Fatalf("registering idle entry: %v", err)
 		}
 	}
 
 	fired := make(chan struct{}, 1)
 
-	_, err := scheduler.AddEvery(time.Millisecond, hqgoscheduler.NewJob("hot", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 1ms", hqgoscheduler.NewJob("hot", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		select {
 		case fired <- struct{}{}:
 		default:

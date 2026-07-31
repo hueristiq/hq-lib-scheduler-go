@@ -13,17 +13,17 @@ import (
 //
 // Fields:
 //   - ID (int): the unique identifier assigned when the entry was registered;
-//     pass it to [Scheduler.Remove] to unregister.
-//   - Job (Job): the registered unit of work.
+//     pass it to [Scheduler.Unregister] to unregister.
 //   - Schedule (Schedule): the schedule the job fires on.
+//   - Job (Job): the registered unit of work.
 //   - Previous (time.Time): the time of the most recent activation, or the
 //     zero [time.Time] when the job has not fired yet.
 //   - Next (time.Time): the next scheduled activation, or the zero
 //     [time.Time] when no future activation exists.
 type Entry struct {
 	ID       int
-	Job      Job
 	Schedule Schedule
+	Job      Job
 	Previous time.Time
 	Next     time.Time
 }
@@ -34,8 +34,8 @@ type Entry struct {
 //
 // Fields:
 //   - id (int): the unique entry identifier.
-//   - job (Job): the registered unit of work.
 //   - schedule (Schedule): the schedule the job fires on.
+//   - job (Job): the registered unit of work.
 //   - previous (time.Time): the most recent activation time.
 //   - next (time.Time): the next scheduled activation time.
 //   - running (bool): whether a run of this entry is currently in flight.
@@ -45,8 +45,8 @@ type Entry struct {
 //     by the scheduling loop.
 type entry struct {
 	id        int
-	job       Job
 	schedule  Schedule
+	job       Job
 	previous  time.Time
 	next      time.Time
 	running   bool
@@ -61,8 +61,8 @@ type entry struct {
 func (e *entry) snapshot() (o Entry) {
 	o = Entry{
 		ID:       e.id,
-		Job:      e.job,
 		Schedule: e.schedule,
+		Job:      e.job,
 		Previous: e.previous,
 		Next:     e.next,
 	}

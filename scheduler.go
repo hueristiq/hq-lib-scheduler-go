@@ -156,9 +156,8 @@ func WithOnError(h OnError) (of OptionFunc) {
 // # Lifecycle
 //
 //  1. Construct with [NewScheduler], optionally passing [OptionFunc] values.
-//  2. Register jobs with [Scheduler.Add] (cron expression),
-//     [Scheduler.AddEvery] (fixed interval), or [Scheduler.AddSchedule]
-//     (custom [Schedule]); registration is possible both before and after
+//  2. Register jobs with [Scheduler.Register] (cron expression, descriptor, or
+//     `@every` interval); registration is possible both before and after
 //     start.
 //  3. Call [Scheduler.Start] to launch the scheduling loop (non-blocking).
 //  4. Call [Scheduler.Stop] to shut down gracefully: the loop halts, per-run
@@ -259,75 +258,31 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 	return
 }
 
-// Add registers job to run on the schedule parsed from spec (see [Parse]).
+// Register registers job to run on the schedule parsed from spec (see [Parse]).
 //
 // Parameters:
 //   - spec (string): the cron expression, descriptor, or `@every` interval.
 //   - job (Job): the unit of work to register; must not be nil.
 //
 // Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
+//   - entryID (int): the identifier of the new entry, for [Scheduler.Unregister].
 //   - err (error): non-nil when spec fails to parse or job is nil.
-func (s *Scheduler) Add(spec string, job Job) (entryID int, err error) {
+func (s *Scheduler) Register(spec string, job Job) (entryID int, err error) {
 	schedule, err := Parse(spec)
 	if err != nil {
-		err = fmt.Errorf("scheduler.Add: parsing %q: %w", spec, err)
+		err = fmt.Errorf("scheduler.Register: parsing %q: %w", spec, err)
 
 		return
 	}
 
-	entryID, err = s.add(schedule, job)
+	entryID, err = s.register(schedule, job)
 
 	return
 }
 
-// AddEvery registers job to run at a fixed interval.
-//
-// Parameters:
-//   - every (time.Duration): the interval between runs; must be positive.
-//   - job (Job): the unit of work to register; must not be nil.
-//
-// Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
-//   - err (error): non-nil when every is non-positive or job is nil.
-func (s *Scheduler) AddEvery(every time.Duration, job Job) (entryID int, err error) {
-	if every <= 0 {
-		err = fmt.Errorf("scheduler.AddEvery: interval must be positive, got %s", every)
-
-		return
-	}
-
-	entryID, err = s.add(IntervalSchedule{Every: every}, job)
-
-	return
-}
-
-// AddSchedule registers job to run on a custom [Schedule] — for example one
-// parsed once with [Parse] and shared between entries, or a user-defined
-// [Schedule] implementation.
-//
-// Parameters:
-//   - schedule (Schedule): the schedule the job fires on; must not be nil.
-//   - job (Job): the unit of work to register; must not be nil.
-//
-// Returns:
-//   - entryID (int): the identifier of the new entry, for [Scheduler.Remove].
-//   - err (error): non-nil when schedule or job is nil.
-func (s *Scheduler) AddSchedule(schedule Schedule, job Job) (entryID int, err error) {
-	if schedule == nil {
-		err = errors.New("scheduler.AddSchedule: schedule is nil")
-
-		return
-	}
-
-	entryID, err = s.add(schedule, job)
-
-	return
-}
-
-// add registers job under schedule and wakes the scheduling loop. The entry
-// is queued for its first schedule evaluation rather than evaluated here:
-// [Schedule.Next] is user code and never runs while holding s.mu.
+// register registers job under schedule and wakes the scheduling loop. The
+// entry is queued for its first schedule evaluation rather than evaluated
+// here: [Schedule.Next] is user code and never runs while holding s.mu.
 //
 // Parameters:
 //   - schedule (Schedule): the schedule the job fires on.
@@ -336,9 +291,9 @@ func (s *Scheduler) AddSchedule(schedule Schedule, job Job) (entryID int, err er
 // Returns:
 //   - entryID (int): the identifier of the new entry.
 //   - err (error): non-nil when job is nil.
-func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
+func (s *Scheduler) register(schedule Schedule, job Job) (entryID int, err error) {
 	if job == nil {
-		err = errors.New("scheduler.add: job is nil")
+		err = errors.New("scheduler.register: job is nil")
 
 		return
 	}
@@ -367,14 +322,13 @@ func (s *Scheduler) add(schedule Schedule, job Job) (entryID int, err error) {
 	return
 }
 
-// Remove unregisters the entry with the given identifier. Removing an
-// unknown identifier is a no-op. An in-flight run of the removed entry is
-// not interrupted.
+// Unregister unregisters the entry with the given identifier. Unregistering
+// an unknown identifier is a no-op. An in-flight run of the unregistered
+// entry is not interrupted.
 //
 // Parameters:
-//   - entryID (int): the identifier returned by [Scheduler.Add],
-//     [Scheduler.AddEvery], or [Scheduler.AddSchedule].
-func (s *Scheduler) Remove(entryID int) {
+//   - entryID (int): the identifier returned by [Scheduler.Register].
+func (s *Scheduler) Unregister(entryID int) {
 	s.mu.Lock()
 
 	e, existed := s.entries[entryID]
