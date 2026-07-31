@@ -110,3 +110,7 @@ func NewJob(name string, run JobFunc) (job Job) {
 
 	return
 }
+
+// namedJob satisfies the contract. JobFunc deliberately does not: it adapts
+// a plain function into the Run method only; [NewJob] pairs it with a name.
+var _ Job = (*namedJob)(nil)

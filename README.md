@@ -2,7 +2,7 @@
 
 ![made with go](https://img.shields.io/badge/made%20with-Go-1E90FF.svg) [![go reference](https://pkg.go.dev/badge/github.com/hueristiq/hq-lib-scheduler-go.svg)](https://pkg.go.dev/github.com/hueristiq/hq-lib-scheduler-go) [![license](https://img.shields.io/badge/license-MIT-gray.svg?color=1E90FF)](https://github.com/hueristiq/hq-lib-scheduler-go/blob/main/LICENSE) ![maintenance](https://img.shields.io/badge/maintained%3F-yes-1E90FF.svg) [![open issues](https://img.shields.io/github/issues-raw/hueristiq/hq-lib-scheduler-go.svg?style=flat&color=1E90FF)](https://github.com/hueristiq/hq-lib-scheduler-go/issues?q=is:issue+is:open) [![closed issues](https://img.shields.io/github/issues-closed-raw/hueristiq/hq-lib-scheduler-go.svg?style=flat&color=1E90FF)](https://github.com/hueristiq/hq-lib-scheduler-go/issues?q=is:issue+is:closed) [![contribution](https://img.shields.io/badge/contributions-welcome-1E90FF.svg)](https://github.com/hueristiq/hq-lib-scheduler-go/blob/main/CONTRIBUTING.md)
 
-`hq-lib-scheduler-go` is a [Go](https://golang.org/) package for running jobs concurrently, with graceful shutdown, on a time-based schedule.
+`hq-lib-scheduler-go` is a [Go](https://golang.org/) package for running jobs on a time-based schedule.
 
 ## Resources
 
@@ -13,7 +13,6 @@
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Custom Schedules](#custom-schedules)
 	- [Error Handling](#error-handling)
-	- [Logging](#logging)
 - [Cron Expression Format](#cron-expression-format)
 - [Configuration](#configuration)
 - [Run Semantics](#run-semantics)
@@ -22,13 +21,12 @@
 
 ## Features
 
-- **Standard Cron Expressions:** Full 5-field `minute hour day-of-month month day-of-week` syntax — wildcards, steps, ranges, lists, month and day names, `?`, and both `0` and `7` for Sunday — with standard dom/dow OR-semantics.
-- **Descriptors & Intervals:** `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, `@hourly`, and `@every <duration>` for plain intervals.
-- **Concurrent Execution:** Every activation fires its job in its own goroutine, optionally bounded by a concurrency limit, while overlapping runs of the same entry are skipped.
-- **Graceful Shutdown:** `Stop` cancels every per-run context and waits for in-flight runs, bounded by a caller-supplied context.
-- **Failure Reporting:** Returned errors and recovered panics are delivered to a configurable error handler — a panicking job never crashes the process.
-- **Structured Logging:** `WithLogger` plugs a structured logger into the scheduler's lifecycle, activation, and failure records.
-- **Introspection:** `Entries` exposes a snapshot of every registered job with its previous and next activation times.
+- **Standard Cron Expressions:** Full 5-field syntax with wildcards, steps, ranges, lists, names, and dom/dow OR-semantics.
+- **Descriptors & Intervals:** `@daily`, `@hourly`, and friends, plus `@every <duration>` for plain intervals.
+- **Concurrent Execution:** Each activation runs in its own goroutine, with an optional concurrency limit; overlapping runs are skipped.
+- **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs.
+- **Failure Reporting:** Errors and panics go to a configurable handler; a panicking job never crashes the process.
+- **Introspection:** `Entries` snapshots registered jobs with previous and next activation times.
 
 ## Installation
 
@@ -135,16 +133,6 @@ scheduler := hqgoscheduler.NewScheduler(
 )
 ```
 
-### Logging
-
-`WithLogger` registers a structured logger receiving the scheduler's lifecycle, activation, and failure records. The contract is a minimal interface — four leveled methods, each taking a message and alternating keys and values — so any existing logger adapts with a thin wrapper:
-
-```go
-scheduler := hqgoscheduler.NewScheduler(
-	hqgoscheduler.WithLogger(myLogger), // any implementation of logger.Logger
-)
-```
-
 ## Cron Expression Format
 
 A standard expression has five fields, separated by whitespace:
@@ -182,7 +170,6 @@ Behavior is set through functional options passed to `NewScheduler`. Any option 
 | `WithClock(fn)` | Time source of the scheduler. Exists primarily as a test seam; `nil` is ignored. | `time.Now` |
 | `WithMaxConcurrency(n)` | Maximum number of job runs executing concurrently; runs beyond the bound wait for a slot. Negative values are treated as zero. | `0` (unlimited) |
 | `WithErrorHandler(fn)` | Callback invoked for every failed run, with the entry snapshot and the error or recovered panic. | failures dropped |
-| `WithLogger(l)` | Structured logger receiving lifecycle, activation, and failure records. `nil` is ignored. | no logging |
 
 ## Run Semantics
 

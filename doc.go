@@ -45,8 +45,6 @@
 //   - [WithClock] substitutes the time source, primarily as a test seam.
 //   - [WithMaxConcurrency] bounds how many job runs execute concurrently.
 //   - [WithErrorHandler] registers the callback invoked for every failed run.
-//   - [WithLogger] registers the structured logger receiving lifecycle,
-//     activation, and failure records.
 //
 // # Concurrency
 //

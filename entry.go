@@ -29,7 +29,8 @@ type Entry struct {
 }
 
 // entry is the scheduler-internal mutable form of [Entry], adding the
-// in-flight flag used to implement skip-overlap semantics.
+// in-flight flag used to implement skip-overlap semantics and the
+// bookkeeping the scheduling loop's min-heap requires.
 //
 // Fields:
 //   - id (int): the unique entry identifier.
@@ -38,13 +39,19 @@ type Entry struct {
 //   - previous (time.Time): the most recent activation time.
 //   - next (time.Time): the next scheduled activation time.
 //   - running (bool): whether a run of this entry is currently in flight.
+//   - heapIndex (int): the entry's index in the scheduling heap, or -1 when
+//     the entry is not in the heap.
+//   - queued (bool): whether the entry awaits its first schedule evaluation
+//     by the scheduling loop.
 type entry struct {
-	id       int
-	job      Job
-	schedule Schedule
-	previous time.Time
-	next     time.Time
-	running  bool
+	id        int
+	job       Job
+	schedule  Schedule
+	previous  time.Time
+	next      time.Time
+	running   bool
+	heapIndex int
+	queued    bool
 }
 
 // snapshot copies the internal entry into an exported [Entry] value.

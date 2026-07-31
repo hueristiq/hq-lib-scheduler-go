@@ -523,3 +523,6 @@ func parseNumber(text string, names map[string]int) (value int, err error) {
 
 	return
 }
+
+// specSchedule satisfies the contract.
+var _ Schedule = (*specSchedule)(nil)
