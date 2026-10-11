@@ -73,7 +73,8 @@ type specSchedule struct {
 // to the next midnight, a non-matching hour to the top of the next hour, and
 // only a matching hour with a non-matching minute advances a single minute.
 // Skips use civil-time arithmetic, so they stay correct across daylight-saving
-// transitions.
+// transitions: a nonexistent hour (a spring-forward gap) is skipped over, and
+// a repeated hour (a fall-back fold) activates at both occurrences.
 //
 // Parameters:
 //   - after (time.Time): the reference instant (exclusive lower bound).
@@ -99,8 +100,17 @@ func (s *specSchedule) Next(after time.Time) (next time.Time) {
 			candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), 0, 0, 0, 0, candidate.Location()).AddDate(0, 0, 1)
 		case s.hours&(uint64(1)<<uint(candidate.Hour())) == 0:
 			// Skip to the top of the next hour; time.Date normalizes an
-			// hour of 24 to midnight of the next day.
-			candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), candidate.Hour()+1, 0, 0, 0, candidate.Location())
+			// hour of 24 to midnight of the next day, and a nonexistent
+			// hour (a daylight-saving spring-forward gap) to the transition
+			// instant, which can lie before candidate — when it does,
+			// advance by a plain hour so the walk cannot stall.
+			skip := time.Date(candidate.Year(), candidate.Month(), candidate.Day(), candidate.Hour()+1, 0, 0, 0, candidate.Location())
+
+			if !skip.After(candidate) {
+				skip = candidate.Add(time.Hour)
+			}
+
+			candidate = skip
 		case s.minutes&(uint64(1)<<uint(candidate.Minute())) == 0:
 			candidate = candidate.Add(time.Minute)
 		default:

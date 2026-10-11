@@ -22,8 +22,9 @@
 // # The Scheduler
 //
 // [NewScheduler] creates a [Scheduler]. [Scheduler.Register] registers a job on a cron
-// expression, descriptor, or `@every` interval; registration is possible both before
-// and after start.
+// expression, descriptor, or `@every` interval; [Scheduler.RegisterSchedule] accepts a
+// ready-made [Schedule], including custom implementations. Registration is possible
+// both before and after start.
 // [Scheduler.Start] launches the scheduling loop in its own goroutine, and
 // [Scheduler.Stop] shuts it down gracefully: the loop halts, every per-run context is
 // cancelled, and in-flight runs are awaited. [Scheduler.Entries] returns a snapshot of

@@ -58,7 +58,8 @@ type OnError func(event ErrorEvent)
 //   - location (*time.Location): the location cron expressions are evaluated
 //     in. Defaults to [time.Local].
 //   - clock (func() time.Time): the time source. Defaults to [time.Now];
-//     substitute it in tests to control scheduling deterministically.
+//     substitute it in tests to control scheduling deterministically. The
+//     clock must not call back into the scheduler.
 //   - maxConcurrency (int): the maximum number of job runs executing
 //     concurrently. Zero means unlimited.
 //   - onError (OnError): invoked with an [ErrorEvent] for every failed
@@ -95,6 +96,10 @@ func WithLocation(loc *time.Location) (of OptionFunc) {
 
 // WithClock configures the time source of the scheduler. It exists primarily
 // as a test seam: substitute a fake clock to make scheduling deterministic.
+//
+// The clock must not call back into the scheduler: it is evaluated from the
+// scheduling loop itself, and a re-entrant call can deadlock it (for example,
+// [Scheduler.Stop] waits for the very loop that is evaluating the clock).
 //
 // Parameters:
 //   - clock (func() time.Time): the time source. Nil is ignored.
@@ -157,8 +162,9 @@ func WithOnError(h OnError) (of OptionFunc) {
 //
 //  1. Construct with [NewScheduler], optionally passing [OptionFunc] values.
 //  2. Register jobs with [Scheduler.Register] (cron expression, descriptor, or
-//     `@every` interval); registration is possible both before and after
-//     start.
+//     `@every` interval) or [Scheduler.RegisterSchedule] (a pre-built
+//     [Schedule], including custom implementations); registration is possible
+//     both before and after start.
 //  3. Call [Scheduler.Start] to launch the scheduling loop (non-blocking).
 //  4. Call [Scheduler.Stop] to shut down gracefully: the loop halts, per-run
 //     contexts are cancelled, and in-flight runs are awaited.
@@ -259,6 +265,8 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 }
 
 // Register registers job to run on the schedule parsed from spec (see [Parse]).
+// It is a convenience wrapper: it parses spec and delegates to
+// [Scheduler.RegisterSchedule].
 //
 // Parameters:
 //   - spec (string): the cron expression, descriptor, or `@every` interval.
@@ -275,25 +283,36 @@ func (s *Scheduler) Register(spec string, job Job) (entryID int, err error) {
 		return
 	}
 
-	entryID, err = s.register(schedule, job)
+	entryID, err = s.RegisterSchedule(schedule, job)
 
 	return
 }
 
-// register registers job under schedule and wakes the scheduling loop. The
-// entry is queued for its first schedule evaluation rather than evaluated
-// here: [Schedule.Next] is user code and never runs while holding s.mu.
+// RegisterSchedule registers job to run on schedule and wakes the scheduling
+// loop. Unlike [Scheduler.Register] it accepts a ready-made [Schedule] —
+// built with [Parse], one of the package's concrete types, or a custom
+// implementation — instead of parsing a specification string.
+//
+// The entry is queued for its first schedule evaluation rather than evaluated
+// here: [Schedule.Next] is user code and never runs while holding the
+// scheduler's internal mutex.
 //
 // Parameters:
-//   - schedule (Schedule): the schedule the job fires on.
-//   - job (Job): the unit of work to register.
+//   - schedule (Schedule): the schedule the job fires on; must not be nil.
+//   - job (Job): the unit of work to register; must not be nil.
 //
 // Returns:
-//   - entryID (int): the identifier of the new entry.
-//   - err (error): non-nil when job is nil.
-func (s *Scheduler) register(schedule Schedule, job Job) (entryID int, err error) {
+//   - entryID (int): the identifier of the new entry, for [Scheduler.Unregister].
+//   - err (error): non-nil when schedule or job is nil.
+func (s *Scheduler) RegisterSchedule(schedule Schedule, job Job) (entryID int, err error) {
 	if job == nil {
-		err = errors.New("scheduler.register: job is nil")
+		err = errors.New("scheduler.Register: job is nil")
+
+		return
+	}
+
+	if schedule == nil {
+		err = errors.New("scheduler.RegisterSchedule: schedule is nil")
 
 		return
 	}
@@ -439,6 +458,9 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 		return
 	}
 
+	// A job run may call [Scheduler.Stop] itself, so waiting for in-flight
+	// runs inline would deadlock: wait on a side goroutine and abandon the
+	// wait when ctx expires first.
 	waited := make(chan struct{})
 
 	go func() {
@@ -470,6 +492,10 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 			s.pending = append(s.pending, e)
 		}
 	}
+
+	// Drop the pointers the queue's backing array still holds before
+	// truncating, so entries unregistered after the stop are not retained.
+	clear(s.queue)
 
 	s.queue = s.queue[:0]
 
@@ -619,6 +645,10 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 	defer close(loopDone)
 
 	for {
+		// Sample the clock before taking the mutex: s.now calls the
+		// user-supplied clock, which must never run under s.mu.
+		now := s.now()
+
 		s.mu.Lock()
 
 		if !s.started || s.generation != generation || runCtx.Err() != nil {
@@ -626,8 +656,6 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 
 			return
 		}
-
-		now := s.now()
 
 		// Pop every due entry off the heap; a popped entry stays out of the
 		// heap until its next activation is recomputed and applied below.
@@ -769,6 +797,18 @@ func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 	if s.sem != nil {
 		select {
 		case s.sem <- struct{}{}:
+			// The slot became available in the same instant shutdown
+			// started. [Scheduler.Stop] cancels the run context after
+			// clearing s.started, so re-check both before running: a run
+			// admitted only after shutdown must not execute.
+			if ctx.Err() != nil || !s.isStarted() {
+				<-s.sem
+
+				s.finishRun(id, job)
+
+				return
+			}
+
 			defer func() { <-s.sem }()
 		case <-ctx.Done():
 			// Shutdown while waiting for a concurrency slot: release the
@@ -798,6 +838,20 @@ func deliverError(h OnError, ev *ErrorEvent) {
 	defer func() { _ = recover() }()
 
 	h(*ev)
+}
+
+// isStarted reports whether the scheduling loop is currently running.
+//
+// Returns:
+//   - started (bool): true while the scheduler is started.
+func (s *Scheduler) isStarted() (started bool) {
+	s.mu.Lock()
+
+	defer s.mu.Unlock()
+
+	started = s.started
+
+	return
 }
 
 // finishRun clears the in-flight flag of the entry identified by id and
@@ -841,7 +895,7 @@ func (s *Scheduler) finishRun(id int, job Job) (snapshot Entry) {
 func runJobSafely(ctx context.Context, job Job, name string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("scheduler.runJob: job %q panicked: %v", name, recovered)
+			err = fmt.Errorf("scheduler.runJobSafely: job %q panicked: %v", name, recovered)
 		}
 	}()
 
