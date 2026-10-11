@@ -47,6 +47,41 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
+// raiseMax atomically raises peak to at least current.
+func raiseMax(peak *atomic.Int32, current int32) {
+	for {
+		seen := peak.Load()
+
+		if current <= seen || peak.CompareAndSwap(seen, current) {
+			return
+		}
+	}
+}
+
+// oneShotSchedule is a custom [hqgoscheduler.Schedule] that fires exactly
+// once at a fixed instant: evaluations before the instant return it, later
+// evaluations return the zero time, so the scheduler never activates the
+// entry again.
+type oneShotSchedule struct {
+	at time.Time
+}
+
+// Next returns the one-shot activation time while it still lies ahead, and
+// the zero [time.Time] afterwards.
+//
+// Parameters:
+//   - after (time.Time): the reference instant (exclusive lower bound).
+//
+// Returns:
+//   - next (time.Time): the activation time, or zero once it has passed.
+func (s oneShotSchedule) Next(after time.Time) (next time.Time) {
+	if after.Before(s.at) {
+		next = s.at
+	}
+
+	return
+}
+
 func TestScheduler_RegisterAndEntries(t *testing.T) {
 	t.Parallel()
 
@@ -119,7 +154,7 @@ func TestScheduler_RegisterValidation(t *testing.T) {
 	require.Contains(t, err.Error(), "scheduler.Register")
 
 	_, err = scheduler.Register("0 12 * * *", nil)
-	require.Error(t, err)
+	require.EqualError(t, err, "scheduler.Register: job is nil")
 }
 
 func TestScheduler_RunsJobs(t *testing.T) {
@@ -165,13 +200,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("slow", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
 		current := inFlight.Add(1)
 
-		for {
-			peak := maxInFlight.Load()
-
-			if current <= peak || maxInFlight.CompareAndSwap(peak, current) {
-				break
-			}
-		}
+		raiseMax(&maxInFlight, current)
 
 		time.Sleep(60 * time.Millisecond)
 
@@ -185,12 +214,18 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 
 	scheduler.Start(t.Context())
 
-	time.Sleep(350 * time.Millisecond)
+	// Let several activations pass while a run is in flight: each 60ms run
+	// spans about six 10ms activations, all of which must be skipped.
+	require.Eventually(t, func() (ok bool) {
+		ok = runs.Load() >= 2
+
+		return
+	}, 3*time.Second, 5*time.Millisecond)
 
 	require.NoError(t, scheduler.Stop(t.Context()))
 
 	// Overlapping activations are skipped: never two in flight, and far fewer
-	// completions than the 35 activations a naive runner would have started.
+	// completions than the activations a naive runner would have started.
 	require.Equal(t, int32(1), maxInFlight.Load())
 	require.Less(t, runs.Load(), int32(10))
 	require.GreaterOrEqual(t, runs.Load(), int32(1))
@@ -255,6 +290,8 @@ func TestScheduler_OnError(t *testing.T) {
 
 		if failure != nil && !errors.Is(failure, boom) {
 			sawPanic = true
+
+			require.Contains(t, failure.Error(), "scheduler.runJobSafely:")
 		}
 	}
 
@@ -284,10 +321,15 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 
 	scheduler.Start(t.Context())
 
-	time.Sleep(50 * time.Millisecond)
+	// Every failed run is delivered through the panicking callback; two
+	// deliveries prove the panic is recovered, and reaching Stop at all
+	// proves the scheduling loop survived it.
+	require.Eventually(t, func() (ok bool) {
+		ok = runs.Load() >= 2
 
-	// Reaching Stop at all proves the panicking callback was recovered: an
-	// unrecovered panic would kill the test binary.
+		return
+	}, 3*time.Second, 5*time.Millisecond)
+
 	require.NoError(t, scheduler.Stop(t.Context()))
 
 	// The scheduling loop was unaffected: the failing job kept firing.
@@ -372,20 +414,17 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithMaxConcurrency(1))
 
 	var (
+		runs        atomic.Int32
 		inFlight    atomic.Int32
 		maxInFlight atomic.Int32
 	)
 
 	work := hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		runs.Add(1)
+
 		current := inFlight.Add(1)
 
-		for {
-			peak := maxInFlight.Load()
-
-			if current <= peak || maxInFlight.CompareAndSwap(peak, current) {
-				break
-			}
-		}
+		raiseMax(&maxInFlight, current)
 
 		time.Sleep(40 * time.Millisecond)
 
@@ -402,7 +441,12 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 
 	scheduler.Start(t.Context())
 
-	time.Sleep(300 * time.Millisecond)
+	// Let several runs complete while the semaphore serializes them.
+	require.Eventually(t, func() (ok bool) {
+		ok = runs.Load() >= 4
+
+		return
+	}, 3*time.Second, 5*time.Millisecond)
 
 	require.NoError(t, scheduler.Stop(t.Context()))
 
@@ -480,10 +524,14 @@ func TestScheduler_StartWithCancelledContext(t *testing.T) {
 
 	scheduler.Start(ctx)
 
-	// The loop exits immediately on a cancelled lifecycle context; give it a
+	// The loop exits immediately on a cancelled lifecycle context: give it a
 	// moment to prove nothing fires, then shut down cleanly.
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, int32(0), runs.Load())
+	require.Never(t, func() (fired bool) {
+		fired = runs.Load() > 0
+
+		return
+	}, 50*time.Millisecond, 5*time.Millisecond)
+	require.Zero(t, runs.Load())
 
 	require.NoError(t, scheduler.Stop(t.Context()))
 }
@@ -534,4 +582,297 @@ func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
 	}
 
 	t.Fatal("cron expression never fired under the fake clock")
+}
+
+func TestScheduler_RegisterSchedule(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2025, time.January, 15, 10, 30, 0, 0, time.UTC)
+
+	clock := newFakeClock(start)
+
+	scheduler := hqgoscheduler.NewScheduler(
+		hqgoscheduler.WithLocation(time.UTC),
+		hqgoscheduler.WithClock(clock.Now),
+	)
+
+	schedule := oneShotSchedule{at: start.Add(time.Minute)}
+
+	fired := make(chan struct{}, 1)
+
+	id, err := scheduler.RegisterSchedule(schedule, hqgoscheduler.NewJob("once", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+
+		return
+	})))
+	require.NoError(t, err)
+	require.Positive(t, id)
+
+	scheduler.Start(t.Context())
+
+	defer func() {
+		require.NoError(t, scheduler.Stop(t.Context()))
+	}()
+
+	// Advance the fake clock until the one-shot activation fires; the loop
+	// re-checks substituted clocks at least once per sleep quantum.
+	require.Eventually(t, func() (ok bool) {
+		clock.Advance(time.Second)
+
+		select {
+		case <-fired:
+			ok = true
+		default:
+		}
+
+		return
+	}, 5*time.Second, 5*time.Millisecond)
+
+	// The custom schedule is exposed through Entries.
+	entries := scheduler.Entries()
+	require.Len(t, entries, 1)
+	require.Equal(t, schedule, entries[0].Schedule)
+	require.Equal(t, schedule.at, entries[0].Previous)
+
+	// One-shot: advancing well past the activation must not fire again.
+	for range 10 {
+		clock.Advance(time.Minute)
+	}
+
+	require.Never(t, func() (firedAgain bool) {
+		select {
+		case <-fired:
+			firedAgain = true
+		default:
+		}
+
+		return
+	}, 200*time.Millisecond, 5*time.Millisecond)
+}
+
+func TestScheduler_RegisterScheduleValidation(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.NewScheduler()
+
+	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		return
+	}))
+
+	_, err := scheduler.RegisterSchedule(nil, job)
+	require.EqualError(t, err, "scheduler.RegisterSchedule: schedule is nil")
+
+	_, err = scheduler.RegisterSchedule(hqgoscheduler.IntervalSchedule{Every: time.Minute}, nil)
+	require.EqualError(t, err, "scheduler.Register: job is nil")
+}
+
+func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2025, time.January, 15, 10, 30, 0, 0, time.UTC)
+
+	clock := newFakeClock(start)
+
+	scheduler := hqgoscheduler.NewScheduler(
+		hqgoscheduler.WithLocation(time.UTC),
+		hqgoscheduler.WithClock(clock.Now),
+		hqgoscheduler.WithMaxConcurrency(1),
+	)
+
+	var aRuns atomic.Int32
+
+	aStarted := make(chan struct{})
+
+	// Job A holds the single concurrency slot until shutdown cancels its
+	// context.
+	_, err := scheduler.Register("@every 1m", hqgoscheduler.NewJob("blocker", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		aRuns.Add(1)
+
+		select {
+		case <-aStarted:
+		default:
+			close(aStarted)
+		}
+
+		<-ctx.Done()
+
+		err = ctx.Err()
+
+		return
+	})))
+	require.NoError(t, err)
+
+	scheduler.Start(t.Context())
+
+	// Advance the fake clock past A's activation and wait until it is
+	// running, holding the slot.
+	require.Eventually(t, func() (ok bool) {
+		clock.Advance(time.Second)
+
+		select {
+		case <-aStarted:
+			ok = true
+		default:
+		}
+
+		return
+	}, 5*time.Second, 5*time.Millisecond)
+
+	// Only now register job B: it fires while A still holds the slot and
+	// queues on the semaphore behind it.
+	var bRuns atomic.Int32
+
+	_, err = scheduler.Register("@every 1m", hqgoscheduler.NewJob("queued", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		bRuns.Add(1)
+
+		return
+	})))
+	require.NoError(t, err)
+
+	// Advance past B's activation and wait until it has fired — recorded by
+	// its previous-activation timestamp — and is queued behind A.
+	require.Eventually(t, func() (ok bool) {
+		clock.Advance(10 * time.Second)
+
+		entries := scheduler.Entries()
+		if len(entries) != 2 {
+			return
+		}
+
+		ok = !entries[1].Previous.IsZero()
+
+		return
+	}, 5*time.Second, 5*time.Millisecond)
+
+	// A honors cancellation, so Stop completes; B, queued behind A, must
+	// never execute.
+	require.NoError(t, scheduler.Stop(t.Context()))
+
+	require.Equal(t, int32(1), aRuns.Load())
+	require.Zero(t, bRuns.Load())
+}
+
+func TestScheduler_UnregisterWhileInFlight(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2025, time.January, 15, 10, 30, 0, 0, time.UTC)
+
+	clock := newFakeClock(start)
+
+	var (
+		mu     sync.Mutex
+		events []hqgoscheduler.ErrorEvent
+	)
+
+	scheduler := hqgoscheduler.NewScheduler(
+		hqgoscheduler.WithLocation(time.UTC),
+		hqgoscheduler.WithClock(clock.Now),
+		hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
+			mu.Lock()
+
+			defer mu.Unlock()
+
+			events = append(events, ev)
+		}),
+	)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	boom := errors.New("boom")
+
+	id, err := scheduler.Register("@every 1m", hqgoscheduler.NewJob("in-flight", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+
+		<-release
+
+		err = boom
+
+		return
+	})))
+	require.NoError(t, err)
+
+	scheduler.Start(t.Context())
+
+	// Advance the fake clock so the run starts, then unregister the entry
+	// while it is in flight: the run is not interrupted.
+	require.Eventually(t, func() (ok bool) {
+		clock.Advance(time.Second)
+
+		select {
+		case <-started:
+			ok = true
+		default:
+		}
+
+		return
+	}, 5*time.Second, 5*time.Millisecond)
+
+	scheduler.Unregister(id)
+
+	require.Empty(t, scheduler.Entries())
+
+	close(release)
+
+	// The failed run is still reported; its entry was removed while in
+	// flight, so the snapshot carries only the identifier and the job.
+	require.Eventually(t, func() (ok bool) {
+		mu.Lock()
+
+		defer mu.Unlock()
+
+		if len(events) != 1 {
+			return
+		}
+
+		ok = errors.Is(events[0].Err, boom) &&
+			events[0].Entry.ID == id &&
+			events[0].Entry.Job != nil &&
+			events[0].Entry.Schedule == nil
+
+		return
+	}, 5*time.Second, 5*time.Millisecond)
+
+	require.NoError(t, scheduler.Stop(t.Context()))
+}
+
+func TestScheduler_EntriesReturnsIndependentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.NewScheduler()
+
+	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+		return
+	}))
+
+	id1, err := scheduler.Register("@every 1m", job)
+	require.NoError(t, err)
+
+	id2, err := scheduler.Register("@every 2m", job)
+	require.NoError(t, err)
+
+	first := scheduler.Entries()
+	require.Len(t, first, 2)
+
+	// Mutate the snapshot aggressively: the scheduler must be unaffected.
+	first[0], first[1] = first[1], first[0]
+	first[0].ID = -1
+	first[0].Job = nil
+	first[0].Schedule = nil
+	first[1].Next = time.Date(1999, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	second := scheduler.Entries()
+	require.Len(t, second, 2)
+	require.Equal(t, id1, second[0].ID)
+	require.Equal(t, id2, second[1].ID)
+	require.NotNil(t, second[0].Schedule)
+	require.NotNil(t, second[0].Job)
+	require.NotNil(t, second[1].Schedule)
+	require.NotNil(t, second[1].Job)
 }

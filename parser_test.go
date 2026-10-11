@@ -266,3 +266,67 @@ func TestParse_InvalidSpecs(t *testing.T) {
 		})
 	}
 }
+
+func TestParse_DSTTransitions(t *testing.T) {
+	t.Parallel()
+
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		spec  string
+		after time.Time
+		want  time.Time
+	}{
+		{
+			// 2025-03-09 02:00 EST does not exist (spring forward): the
+			// activation moves past the gap to the next day.
+			name:  "spring forward skips the nonexistent hour",
+			spec:  "0 2 * * *",
+			after: time.Date(2025, time.March, 9, 1, 30, 0, 0, loc),
+			want:  time.Date(2025, time.March, 10, 2, 0, 0, 0, loc),
+		},
+		{
+			name:  "spring forward skips a minute inside the gap",
+			spec:  "30 2 * * *",
+			after: time.Date(2025, time.March, 9, 1, 0, 0, 0, loc),
+			want:  time.Date(2025, time.March, 10, 2, 30, 0, 0, loc),
+		},
+		{
+			name:  "spring forward minute walk jumps the gap",
+			spec:  "* * * * *",
+			after: time.Date(2025, time.March, 9, 1, 59, 0, 0, loc),
+			want:  time.Date(2025, time.March, 9, 3, 0, 0, 0, loc),
+		},
+		{
+			// 2025-11-02 01:00 occurs twice (fall back): the first
+			// occurrence activates.
+			name:  "fall back first occurrence",
+			spec:  "0 1 * * *",
+			after: time.Date(2025, time.November, 2, 0, 30, 0, 0, loc),
+			want:  time.Date(2025, time.November, 2, 1, 0, 0, 0, loc),
+		},
+		{
+			// And the second occurrence follows: an evaluation inside the
+			// repeated hour lands on it (01:00 EST, built deterministically
+			// as 05:00 EST minus four hours).
+			name:  "fall back second occurrence",
+			spec:  "0 1 * * *",
+			after: time.Date(2025, time.November, 2, 1, 0, 0, 0, loc),
+			want:  time.Date(2025, time.November, 2, 5, 0, 0, 0, loc).Add(-4 * time.Hour),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			schedule, err := hqgoscheduler.Parse(tt.spec)
+			require.NoError(t, err)
+
+			next := schedule.Next(tt.after)
+			require.Equal(t, tt.want, next)
+		})
+	}
+}

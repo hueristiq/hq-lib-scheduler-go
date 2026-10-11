@@ -10,6 +10,7 @@
 - [Installation](#installation)
 - [Usage](#usage)
 	- [Scheduling a Job](#scheduling-a-job)
+	- [Custom Schedules](#custom-schedules)
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Error Handling](#error-handling)
 - [Configuration](#configuration)
@@ -20,6 +21,7 @@
 
 - **Standard Cron Expressions Support:** Full 5-field syntax with wildcards, steps, ranges, lists, names, and dom/dow OR-semantics.
 - **Descriptors & Intervals Support:** `@daily`, `@hourly`, and friends, plus `@every <duration>` for plain intervals.
+- **Custom Schedules:** `RegisterSchedule` accepts any `Schedule` implementation — from `Parse`, the built-in `IntervalSchedule`, or your own type.
 - **Concurrent Execution:** Each activation runs in its own goroutine; overlapping runs are skipped.
 - **Introspection:** `Entries` snapshots registered jobs with previous and next activation times.
 - **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs.
@@ -94,6 +96,22 @@ func main() {
 ```
 
 Registration is also possible after `Start`, and `Unregister(id)` unregisters an entry at any time.
+
+### Custom Schedules
+
+`Register` covers cron expressions, descriptors, and `@every` intervals. For a pre-built `Schedule` — from `Parse`, the built-in `IntervalSchedule`, or a custom implementation — use `RegisterSchedule`:
+
+```go
+schedule, err := hqgoscheduler.Parse("30 9 * * MON-FRI")
+if err != nil {
+	panic(err)
+}
+
+id, err := scheduler.RegisterSchedule(schedule, job)
+if err != nil {
+	panic(err)
+}
+```
 
 ### Descriptors & Fixed Intervals
 

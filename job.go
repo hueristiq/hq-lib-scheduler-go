@@ -98,7 +98,7 @@ func (j *namedJob) Run(ctx context.Context) (err error) {
 // Parameters:
 //   - name (string): the human-readable job name, used for introspection and
 //     error reporting.
-//   - run (JobFunc): the function executed on each run.
+//   - run (JobFunc): the function executed on each run; must not be nil.
 //
 // Returns:
 //   - job (Job): a [Job] wrapping run under name.
