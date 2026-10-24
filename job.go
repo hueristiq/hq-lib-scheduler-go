@@ -15,6 +15,10 @@ type Job interface {
 	// Name returns the human-readable name of the job, used for
 	// introspection and error reporting.
 	//
+	// Parameters:
+	//
+	//	none.
+	//
 	// Returns:
 	//   - name (string): the job name.
 	Name() (name string)
@@ -70,6 +74,10 @@ type namedJob struct {
 }
 
 // Name returns the name the job was constructed with.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - name (string): the job name.

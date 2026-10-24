@@ -49,6 +49,10 @@ type ErrorEvent struct {
 //
 // Parameters:
 //   - event (ErrorEvent): the failed run's entry snapshot and failure.
+//
+// Returns:
+//
+//	none.
 type OnError func(event ErrorEvent)
 
 // options holds the configurable knobs of a [Scheduler], populated through
@@ -75,6 +79,10 @@ type options struct {
 //
 // Parameters:
 //   - opts (*options): the options bag to mutate.
+//
+// Returns:
+//
+//	none.
 type OptionFunc func(opts *options)
 
 // WithLocation configures the location cron expressions are evaluated in.
@@ -347,6 +355,10 @@ func (s *Scheduler) RegisterSchedule(schedule Schedule, job Job) (entryID int, e
 //
 // Parameters:
 //   - entryID (int): the identifier returned by [Scheduler.Register].
+//
+// Returns:
+//
+//	none.
 func (s *Scheduler) Unregister(entryID int) {
 	s.mu.Lock()
 
@@ -368,6 +380,10 @@ func (s *Scheduler) Unregister(entryID int) {
 // Entries returns a snapshot copy of every registered entry, ordered by
 // entry identifier. Mutating the returned values never affects the
 // scheduler's internal state.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - entries ([]Entry): the registered entries, ordered by identifier.
@@ -399,6 +415,10 @@ func (s *Scheduler) Entries() (entries []Entry) {
 //
 // Parameters:
 //   - ctx (context.Context): the lifecycle context of the scheduler.
+//
+// Returns:
+//
+//	none.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 
@@ -506,6 +526,14 @@ func (s *Scheduler) Stop(ctx context.Context) (err error) {
 
 // signal wakes the scheduling loop so it recomputes its sleep. It never
 // blocks: a pending wake-up is coalesced.
+//
+// Parameters:
+//
+//	none.
+//
+// Returns:
+//
+//	none.
 func (s *Scheduler) signal() {
 	select {
 	case s.wake <- struct{}{}:
@@ -515,6 +543,10 @@ func (s *Scheduler) signal() {
 
 // now returns the current time from the configured clock, expressed in the
 // configured location.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - now (time.Time): the scheduler's current time.
@@ -542,6 +574,10 @@ type nextActivation struct {
 type entryHeap []*entry
 
 // Len returns the number of entries in the heap.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - n (int): the heap size.
@@ -577,6 +613,10 @@ func (h entryHeap) Less(i, j int) (less bool) {
 // Parameters:
 //   - i (int): the index of the first entry.
 //   - j (int): the index of the second entry.
+//
+// Returns:
+//
+//	none.
 func (h entryHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].heapIndex = i
@@ -587,6 +627,10 @@ func (h entryHeap) Swap(i, j int) {
 //
 // Parameters:
 //   - x (any): the entry to append.
+//
+// Returns:
+//
+//	none.
 func (h *entryHeap) Push(x any) {
 	e := x.(*entry)
 
@@ -597,6 +641,10 @@ func (h *entryHeap) Push(x any) {
 
 // Pop removes and returns the last entry of the heap; [heap.Pop] moves the
 // minimum to the end before calling it.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - x (any): the removed entry.
@@ -641,6 +689,10 @@ func (h *entryHeap) Pop() (x any) {
 //   - generation (int): the generation this loop belongs to.
 //   - runCtx (context.Context): the run context of this generation.
 //   - loopDone (chan struct{}): closed when the loop exits.
+//
+// Returns:
+//
+//	none.
 func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan struct{}) {
 	defer close(loopDone)
 
@@ -713,20 +765,18 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 		// the lock was released.
 		current := s.started && s.generation == generation && runCtx.Err() == nil
 
-		for _, u := range updates {
-			if !current {
-				break
-			}
+		if current {
+			for _, u := range updates {
+				e, ok := s.entries[u.entry.id]
+				if !ok || e != u.entry {
+					continue
+				}
 
-			e, ok := s.entries[u.entry.id]
-			if !ok || e != u.entry {
-				continue
-			}
+				e.next = u.next
 
-			e.next = u.next
-
-			if !e.next.IsZero() {
-				heap.Push(&s.queue, e)
+				if !e.next.IsZero() {
+					heap.Push(&s.queue, e)
+				}
 			}
 		}
 
@@ -785,6 +835,10 @@ func (s *Scheduler) loop(generation int, runCtx context.Context, loopDone chan s
 //   - job (Job): the unit of work to execute.
 //   - parent (context.Context): the scheduler run context the per-run
 //     context derives from.
+//
+// Returns:
+//
+//	none.
 func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 	defer s.wg.Done()
 
@@ -834,6 +888,10 @@ func (s *Scheduler) runJob(id int, job Job, parent context.Context) {
 // Parameters:
 //   - h (OnError): the failure callback to invoke.
 //   - ev (*ErrorEvent): the failed run's entry snapshot and failure.
+//
+// Returns:
+//
+//	none.
 func deliverError(h OnError, ev *ErrorEvent) {
 	defer func() { _ = recover() }()
 
@@ -841,6 +899,10 @@ func deliverError(h OnError, ev *ErrorEvent) {
 }
 
 // isStarted reports whether the scheduling loop is currently running.
+//
+// Parameters:
+//
+//	none.
 //
 // Returns:
 //   - started (bool): true while the scheduler is started.
