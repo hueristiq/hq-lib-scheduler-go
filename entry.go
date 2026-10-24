@@ -56,6 +56,10 @@ type entry struct {
 
 // snapshot copies the internal entry into an exported [Entry] value.
 //
+// Parameters:
+//
+//	none.
+//
 // Returns:
 //   - o (Entry): an immutable-by-convention copy of the entry state.
 func (e *entry) snapshot() (o Entry) {

@@ -343,8 +343,8 @@ func isWildcard(field string) (wildcard bool) {
 //
 // Parameters:
 //   - field (string): the raw field text.
-//   - min (int): the smallest allowed value (inclusive).
-//   - max (int): the largest allowed value (inclusive).
+//   - minValue (int): the smallest allowed value (inclusive).
+//   - maxValue (int): the largest allowed value (inclusive).
 //   - names (map[string]int): optional name-to-value aliases (months,
 //     days of week); may be nil.
 //   - allowQuestion (bool): whether `?` is accepted as an alias for `*`.
@@ -386,8 +386,8 @@ func parseField(field string, minValue, maxValue int, names map[string]int, allo
 //
 // Parameters:
 //   - item (string): the raw item text.
-//   - min (int): the smallest allowed value (inclusive).
-//   - max (int): the largest allowed value (inclusive).
+//   - minValue (int): the smallest allowed value (inclusive).
+//   - maxValue (int): the largest allowed value (inclusive).
 //   - names (map[string]int): optional name-to-value aliases; may be nil.
 //   - allowQuestion (bool): whether `?` is accepted as an alias for `*`.
 //   - name (string): the human-readable field name used in error messages.
