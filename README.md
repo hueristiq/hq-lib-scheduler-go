@@ -11,6 +11,7 @@
 - [Usage](#usage)
 	- [Scheduling a Job](#scheduling-a-job)
 	- [Custom Schedules](#custom-schedules)
+	- [Introspection](#introspection)
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Error Handling](#error-handling)
 - [Configuration](#configuration)
@@ -24,15 +25,17 @@
 - **Custom Schedules:** `RegisterSchedule` accepts any `Schedule` implementation — from `Parse`, the built-in `IntervalSchedule`, or your own type.
 - **Concurrent Execution:** Each activation runs in its own goroutine; overlapping runs are skipped.
 - **Introspection:** `Entries` snapshots registered jobs with previous and next activation times.
-- **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs.
+- **Graceful Shutdown:** `Stop` cancels run contexts and waits for in-flight jobs up to the supplied deadline.
 
 ## Installation
 
 To install `hq-lib-scheduler-go`, run the following command in your Go project:
 
 ```bash
-go get -v -u github.com/hueristiq/hq-lib-scheduler-go
+go get github.com/hueristiq/hq-lib-scheduler-go@latest
 ```
+
+Requires Go 1.26.3 or later.
 
 ## Usage
 
@@ -41,6 +44,8 @@ The examples below import the package under the `hqgoscheduler` alias.
 ```go
 import hqgoscheduler "github.com/hueristiq/hq-lib-scheduler-go"
 ```
+
+The snippets below are illustrative.
 
 ### Scheduling a Job
 
@@ -95,7 +100,7 @@ func main() {
 }
 ```
 
-Registration is also possible after `Start`, and `Unregister(id)` unregisters an entry at any time.
+Registration is also possible after `Start`, and `Unregister(id)` unregisters an entry at any time. `Start` and `Stop` must not be called concurrently: serialize lifecycle calls. Cancelling the lifecycle context stops the loop without waiting for in-flight runs. Use a `Stop` context that lets the in-flight runs finish before restarting; a `Stop` that times out leaves the scheduler stopped with entries not reset, so recreate the scheduler instead of restarting it.
 
 ### Custom Schedules
 
@@ -112,6 +117,18 @@ if err != nil {
 	panic(err)
 }
 ```
+
+### Introspection
+
+`Entries` returns a snapshot of the registered jobs, ordered by identifier:
+
+```go
+for _, entry := range scheduler.Entries() {
+	fmt.Printf("%d %s next=%s\n", entry.ID, entry.Job.Name(), entry.Next.Format(time.RFC3339))
+}
+```
+
+`Next` is the zero time for an entry that has not been evaluated yet or has no future activation.
 
 ### Descriptors & Fixed Intervals
 
@@ -136,7 +153,7 @@ scheduler := hqgoscheduler.NewScheduler(
 
 ## Configuration
 
-Behavior is set through functional options passed to `NewScheduler`. Any option left unset falls back to its default.
+Behavior is set through functional options passed to `NewScheduler`. Any option left unset falls back to its default. The `With*` helpers cover the common cases; because the option receives the exported `Options` type, callers can also write custom `OptionFunc`s.
 
 | Option | Description | Default |
 | --- | --- | --- |

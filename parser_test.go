@@ -330,3 +330,76 @@ func TestParse_DSTTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestParse_DSTMidnightGapDoesNotStall(t *testing.T) {
+	t.Parallel()
+
+	loc, err := time.LoadLocation("America/Santiago")
+	require.NoError(t, err)
+
+	// Chile's 2025 spring-forward transition is at local midnight on
+	// 2025-09-07, so 00:00 does not exist and time.Date normalizes it back
+	// to the previous day. Any day-restricted schedule must still return.
+	after := time.Date(2025, time.September, 6, 12, 0, 0, 0, loc)
+
+	tests := []struct {
+		name string
+		spec string
+		want time.Time
+	}{
+		{
+			name: "target day after the gap",
+			spec: "0 0 8 * *",
+			want: time.Date(2025, time.September, 8, 0, 0, 0, 0, loc),
+		},
+		{
+			name: "first of the next month",
+			spec: "0 0 1 * *",
+			want: time.Date(2025, time.October, 1, 0, 0, 0, 0, loc),
+		},
+		{
+			name: "weekday after the gap",
+			spec: "0 0 * * MON",
+			want: time.Date(2025, time.September, 8, 0, 0, 0, 0, loc),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			schedule, err := hqgoscheduler.Parse(tt.spec)
+			require.NoError(t, err)
+
+			done := make(chan time.Time, 1)
+
+			go func() {
+				done <- schedule.Next(after)
+			}()
+
+			select {
+			case next := <-done:
+				require.Equal(t, tt.want, next)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Next did not return within 2s")
+			}
+		})
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	f.Add("@hourly")
+	f.Add("0 0 8 * *")
+	f.Add("*/15 9-17 * * MON-FRI")
+	f.Add("not a spec")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, spec string) {
+		schedule, err := hqgoscheduler.Parse(spec)
+		if err != nil {
+			return
+		}
+
+		require.NotNil(t, schedule)
+	})
+}

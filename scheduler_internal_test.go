@@ -22,7 +22,7 @@ func TestRunJob_DoesNotRunWhenStopped(t *testing.T) {
 
 	var runs atomic.Int32
 
-	job := NewJob("never", JobFunc(func(ctx context.Context) error {
+	job := NewJob("never", JobFunc(func(context.Context) error {
 		runs.Add(1)
 
 		return nil
@@ -42,7 +42,7 @@ func TestRunJob_DoesNotRunWhenStopped(t *testing.T) {
 
 	s.wg.Add(1)
 
-	s.runJob(id, job, context.Background())
+	s.runJob(context.Background(), id, job)
 
 	s.wg.Wait()
 
@@ -88,11 +88,11 @@ func TestParseFieldEdges(t *testing.T) {
 func TestWithMaxConcurrencyNegative(t *testing.T) {
 	t.Parallel()
 
-	opts := &options{}
+	opts := &Options{}
 	WithMaxConcurrency(-1)(opts)
 
-	if opts.maxConcurrency != 0 {
-		t.Fatalf("maxConcurrency = %d, want 0", opts.maxConcurrency)
+	if opts.MaxConcurrency != 0 {
+		t.Fatalf("MaxConcurrency = %d, want 0", opts.MaxConcurrency)
 	}
 }
 
@@ -188,4 +188,101 @@ func TestLoopRescheduleBranches(t *testing.T) {
 	defer stopCancel()
 
 	_ = scheduler.Stop(stopCtx)
+}
+
+func TestScheduler_RestartAfterParentContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	scheduler := NewScheduler()
+
+	var runs atomic.Int32
+
+	_, err := scheduler.Register("@every 5ms", NewJob("tick", func(context.Context) error {
+		runs.Add(1)
+
+		return nil
+	}))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	scheduler.Start(ctx)
+
+	// The loop must mark itself stopped when its parent context dies, so a
+	// later Start is not a no-op.
+	require.Eventually(t, func() bool {
+		scheduler.mu.Lock()
+		defer scheduler.mu.Unlock()
+
+		return !scheduler.started
+	}, time.Second, time.Millisecond)
+
+	scheduler.Start(context.Background())
+
+	require.Eventually(t, func() bool {
+		return runs.Load() > 0
+	}, time.Second, 5*time.Millisecond)
+
+	require.NoError(t, scheduler.Stop(context.Background()))
+}
+
+func TestRunJobDoesNotRunAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	scheduler := NewScheduler()
+
+	var ran atomic.Bool
+
+	job := NewJob("noop", func(context.Context) error {
+		ran.Store(true)
+
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	scheduler.wg.Add(1)
+
+	scheduler.runJob(ctx, 1, job)
+
+	require.False(t, ran.Load())
+}
+
+type panickingNameJob struct {
+	ran *atomic.Bool
+}
+
+func (j *panickingNameJob) Name() string {
+	panic("name boom")
+}
+
+func (j *panickingNameJob) Run(context.Context) error {
+	j.ran.Store(true)
+
+	return nil
+}
+
+func TestRunJobRecoversPanickingName(t *testing.T) {
+	t.Parallel()
+
+	scheduler := NewScheduler()
+
+	var (
+		ran         atomic.Bool
+		reportedErr error
+	)
+
+	scheduler.onError = func(event ErrorEvent) {
+		reportedErr = event.Err
+	}
+
+	scheduler.wg.Add(1)
+
+	scheduler.runJob(context.Background(), 1, &panickingNameJob{ran: &ran})
+
+	require.Error(t, reportedErr)
+	require.Contains(t, reportedErr.Error(), "name panicked")
+	require.False(t, ran.Load())
 }

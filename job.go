@@ -15,10 +15,6 @@ type Job interface {
 	// Name returns the human-readable name of the job, used for
 	// introspection and error reporting.
 	//
-	// Parameters:
-	//
-	//	none.
-	//
 	// Returns:
 	//   - name (string): the job name.
 	Name() (name string)
@@ -26,11 +22,12 @@ type Job interface {
 	// Run executes the job once.
 	//
 	// The provided context is cancelled when the owning [Scheduler] is
-	// stopped; implementations should honor it for prompt shutdown.
+	// stopped or when the context passed to [Scheduler.Start] is cancelled;
+	// implementations should honor it for prompt shutdown.
 	//
 	// Parameters:
-	//   - ctx (context.Context): the per-run context, cancelled on
-	//     [Scheduler.Stop].
+	//   - ctx (context.Context): the per-run context, cancelled by
+	//     [Scheduler.Stop] or by the context passed to [Scheduler.Start].
 	//
 	// Returns:
 	//   - err (error): non-nil when the run fails; the error is passed to the
@@ -66,18 +63,14 @@ func (f JobFunc) Run(ctx context.Context) (err error) {
 // namedJob is the [Job] implementation returned by [NewJob].
 //
 // Fields:
-//   - name (string): the human-readable job name.
-//   - run (JobFunc): the function executed on each run.
+//   - name (string): human-readable job name.
+//   - run (JobFunc): function executed on each run.
 type namedJob struct {
 	name string
 	run  JobFunc
 }
 
 // Name returns the name the job was constructed with.
-//
-// Parameters:
-//
-//	none.
 //
 // Returns:
 //   - name (string): the job name.

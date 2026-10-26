@@ -93,11 +93,9 @@ func (s *specSchedule) Next(after time.Time) (next time.Time) {
 	for candidate.Before(limit) {
 		switch {
 		case s.months&(uint16(1)<<uint(candidate.Month())) == 0:
-			// Skip to the first second of the next month.
-			candidate = time.Date(candidate.Year(), candidate.Month(), 1, 0, 0, 0, 0, candidate.Location()).AddDate(0, 1, 0)
+			candidate = startOfNextMonth(candidate)
 		case !s.dayMatches(candidate):
-			// Skip to midnight of the next day.
-			candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), 0, 0, 0, 0, candidate.Location()).AddDate(0, 0, 1)
+			candidate = startOfNextDay(candidate)
 		case s.hours&(uint64(1)<<uint(candidate.Hour())) == 0:
 			// Skip to the top of the next hour; time.Date normalizes an
 			// hour of 24 to midnight of the next day, and a nonexistent
@@ -118,6 +116,55 @@ func (s *specSchedule) Next(after time.Time) (next time.Time) {
 
 			return
 		}
+	}
+
+	return
+}
+
+// startOfNextDay returns the first instant of the calendar day after t. When
+// the target day's local midnight does not exist (a daylight-saving gap), it
+// advances an hour at a time until the target date begins, instead of letting
+// time.Date normalize backwards onto the previous day and stalling the walk.
+//
+// Parameters:
+//   - t (time.Time): the reference instant.
+//
+// Returns:
+//   - next (time.Time): the first instant of the following calendar day.
+func startOfNextDay(t time.Time) (next time.Time) {
+	y, m, d := t.AddDate(0, 0, 1).Date()
+
+	next = time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+
+	for next.Year() != y || next.Month() != m || next.Day() != d || !next.After(t) {
+		next = next.Add(time.Hour)
+	}
+
+	return
+}
+
+// startOfNextMonth returns the first instant of the calendar month after t,
+// applying the same gap handling as [startOfNextDay].
+//
+// Parameters:
+//   - t (time.Time): the reference instant.
+//
+// Returns:
+//   - next (time.Time): the first instant of the following calendar month.
+func startOfNextMonth(t time.Time) (next time.Time) {
+	y, m, _ := t.Date()
+
+	m++
+
+	if m > time.December {
+		m = time.January
+		y++
+	}
+
+	next = time.Date(y, m, 1, 0, 0, 0, 0, t.Location())
+
+	for next.Year() != y || next.Month() != m || next.Day() != 1 || !next.After(t) {
+		next = next.Add(time.Hour)
 	}
 
 	return
