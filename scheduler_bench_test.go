@@ -14,8 +14,8 @@ import (
 func BenchmarkSchedulerFireAmongMany(b *testing.B) {
 	scheduler := hqgoscheduler.NewScheduler()
 
-	idle := hqgoscheduler.NewJob("idle", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
-		return
+	idle := hqgoscheduler.NewJob("idle", hqgoscheduler.JobFunc(func(context.Context) error {
+		return nil
 	}))
 
 	for range 50000 {
@@ -26,13 +26,13 @@ func BenchmarkSchedulerFireAmongMany(b *testing.B) {
 
 	fired := make(chan struct{}, 1)
 
-	_, err := scheduler.Register("@every 1ms", hqgoscheduler.NewJob("hot", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 1ms", hqgoscheduler.NewJob("hot", hqgoscheduler.JobFunc(func(context.Context) error {
 		select {
 		case fired <- struct{}{}:
 		default:
 		}
 
-		return
+		return nil
 	})))
 	if err != nil {
 		b.Fatalf("registering hot entry: %v", err)

@@ -12,8 +12,8 @@ import (
 func TestJob_Adapter(t *testing.T) {
 	t.Parallel()
 
-	job := hqgoscheduler.NewJob("greeter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
-		return
+	job := hqgoscheduler.NewJob("greeter", hqgoscheduler.JobFunc(func(context.Context) error {
+		return nil
 	}))
 
 	require.Equal(t, "greeter", job.Name())

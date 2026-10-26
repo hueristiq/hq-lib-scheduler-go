@@ -12,14 +12,14 @@ import (
 // [Scheduler.Entries] never affects the scheduler's internal state.
 //
 // Fields:
-//   - ID (int): the unique identifier assigned when the entry was registered;
-//     pass it to [Scheduler.Unregister] to unregister.
-//   - Schedule (Schedule): the schedule the job fires on.
-//   - Job (Job): the registered unit of work.
-//   - Previous (time.Time): the time of the most recent activation, or the
-//     zero [time.Time] when the job has not fired yet.
-//   - Next (time.Time): the next scheduled activation, or the zero
-//     [time.Time] when no future activation exists.
+//   - ID (int): unique identifier assigned when the entry was registered;
+//     pass it to [Scheduler.Unregister].
+//   - Schedule (Schedule): schedule the job fires on.
+//   - Job (Job): registered unit of work.
+//   - Previous (time.Time): time of the most recent activation, or the zero
+//     [time.Time] when the job has not fired yet.
+//   - Next (time.Time): next scheduled activation; the zero [time.Time] when no
+//     future activation exists or the entry has not been evaluated yet.
 type Entry struct {
 	ID       int
 	Schedule Schedule
@@ -33,16 +33,14 @@ type Entry struct {
 // bookkeeping the scheduling loop's min-heap requires.
 //
 // Fields:
-//   - id (int): the unique entry identifier.
-//   - schedule (Schedule): the schedule the job fires on.
-//   - job (Job): the registered unit of work.
-//   - previous (time.Time): the most recent activation time.
-//   - next (time.Time): the next scheduled activation time.
-//   - running (bool): whether a run of this entry is currently in flight.
-//   - heapIndex (int): the entry's index in the scheduling heap, or -1 when
-//     the entry is not in the heap.
-//   - queued (bool): whether the entry awaits its first schedule evaluation
-//     by the scheduling loop.
+//   - id (int): unique identifier.
+//   - schedule (Schedule): activation schedule.
+//   - job (Job): unit of work.
+//   - previous (time.Time): most recent activation.
+//   - next (time.Time): next scheduled activation.
+//   - running (bool): whether a run is in flight.
+//   - heapIndex (int): index in the scheduling heap; -1 when absent.
+//   - queued (bool): awaiting first schedule evaluation.
 type entry struct {
 	id        int
 	schedule  Schedule
@@ -55,10 +53,6 @@ type entry struct {
 }
 
 // snapshot copies the internal entry into an exported [Entry] value.
-//
-// Parameters:
-//
-//	none.
 //
 // Returns:
 //   - o (Entry): an immutable-by-convention copy of the entry state.

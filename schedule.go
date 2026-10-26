@@ -25,8 +25,8 @@ type Schedule interface {
 // from the moment it is first evaluated.
 //
 // Fields:
-//   - Every (time.Duration): the fixed interval between activations. It must
-//     be strictly positive; a non-positive interval never activates.
+//   - Every (time.Duration): fixed interval between activations. It must be
+//     strictly positive; a non-positive interval never activates.
 type IntervalSchedule struct {
 	Every time.Duration
 }

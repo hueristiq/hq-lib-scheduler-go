@@ -19,7 +19,7 @@
 // A [Job] is the unit of work: a human-readable name and a Run method receiving a per-run
 // context. [NewJob] adapts a plain [JobFunc] function into a named Job.
 //
-// # The Scheduler
+// # Entry points
 //
 // [NewScheduler] creates a [Scheduler]. [Scheduler.Register] registers a job on a cron
 // expression, descriptor, or `@every` interval; [Scheduler.RegisterSchedule] accepts a
@@ -50,9 +50,10 @@
 // # Concurrency
 //
 // A Scheduler is safe for concurrent use: jobs may be registered, removed, and inspected
-// from any goroutine while the loop runs. Job Run methods execute on their own
-// goroutines; runs of the same entry never overlap, but different entries run
-// concurrently, so jobs sharing state must synchronize it themselves.
+// from any goroutine while the loop runs. Start and Stop are the exception: lifecycle
+// calls must be serialized. Job Run methods execute on their own goroutines; runs of the
+// same entry never overlap, but different entries run concurrently, so jobs sharing state
+// must synchronize it themselves.
 //
 // The implementation relies on the Go standard library only.
 package scheduler

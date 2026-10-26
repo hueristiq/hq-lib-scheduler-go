@@ -92,8 +92,8 @@ func TestScheduler_RegisterAndEntries(t *testing.T) {
 		hqgoscheduler.WithClock(clock.Now),
 	)
 
-	job := hqgoscheduler.NewJob("heartbeat", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
-		return
+	job := hqgoscheduler.NewJob("heartbeat", hqgoscheduler.JobFunc(func(context.Context) error {
+		return nil
 	}))
 
 	id1, err := scheduler.Register("0 12 * * *", job)
@@ -145,7 +145,7 @@ func TestScheduler_RegisterValidation(t *testing.T) {
 
 	scheduler := hqgoscheduler.NewScheduler()
 
-	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
 	}))
 
@@ -154,7 +154,7 @@ func TestScheduler_RegisterValidation(t *testing.T) {
 	require.Contains(t, err.Error(), "scheduler.Register")
 
 	_, err = scheduler.Register("0 12 * * *", nil)
-	require.EqualError(t, err, "scheduler.Register: job is nil")
+	require.EqualError(t, err, "scheduler.RegisterSchedule: job is nil")
 }
 
 func TestScheduler_RunsJobs(t *testing.T) {
@@ -164,7 +164,7 @@ func TestScheduler_RunsJobs(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.Register("@every 20ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 20ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -197,7 +197,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 		inFlight    atomic.Int32
 	)
 
-	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("slow", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("slow", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		current := inFlight.Add(1)
 
 		raiseMax(&maxInFlight, current)
@@ -251,14 +251,14 @@ func TestScheduler_OnError(t *testing.T) {
 
 	boom := errors.New("boom")
 
-	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		err = boom
 
 		return
 	})))
 	require.NoError(t, err)
 
-	_, err = scheduler.Register("@every 15ms", hqgoscheduler.NewJob("panicking", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err = scheduler.Register("@every 15ms", hqgoscheduler.NewJob("panicking", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		panic("kaput")
 	})))
 	require.NoError(t, err)
@@ -310,7 +310,7 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 		panic("observer kaput")
 	}))
 
-	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("failing", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		runs.Add(1)
 
 		err = errors.New("boom")
@@ -378,7 +378,7 @@ func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 
 	started := make(chan struct{})
 
-	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("stubborn", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("stubborn", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		select {
 		case <-started:
 		default:
@@ -419,7 +419,7 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 		maxInFlight atomic.Int32
 	)
 
-	work := hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	work := hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		runs.Add(1)
 
 		current := inFlight.Add(1)
@@ -475,7 +475,7 @@ func TestScheduler_Restart(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 15ms", hqgoscheduler.NewJob("counter", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -512,7 +512,7 @@ func TestScheduler_StartWithCancelledContext(t *testing.T) {
 
 	var runs atomic.Int32
 
-	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("never", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("@every 10ms", hqgoscheduler.NewJob("never", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		runs.Add(1)
 
 		return
@@ -550,7 +550,7 @@ func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
 
 	fired := make(chan struct{}, 1)
 
-	_, err := scheduler.Register("*/1 * * * *", hqgoscheduler.NewJob("minutely", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err := scheduler.Register("*/1 * * * *", hqgoscheduler.NewJob("minutely", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		select {
 		case fired <- struct{}{}:
 		default:
@@ -600,7 +600,7 @@ func TestScheduler_RegisterSchedule(t *testing.T) {
 
 	fired := make(chan struct{}, 1)
 
-	id, err := scheduler.RegisterSchedule(schedule, hqgoscheduler.NewJob("once", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	id, err := scheduler.RegisterSchedule(schedule, hqgoscheduler.NewJob("once", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		select {
 		case fired <- struct{}{}:
 		default:
@@ -658,7 +658,7 @@ func TestScheduler_RegisterScheduleValidation(t *testing.T) {
 
 	scheduler := hqgoscheduler.NewScheduler()
 
-	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
 	}))
 
@@ -666,7 +666,7 @@ func TestScheduler_RegisterScheduleValidation(t *testing.T) {
 	require.EqualError(t, err, "scheduler.RegisterSchedule: schedule is nil")
 
 	_, err = scheduler.RegisterSchedule(hqgoscheduler.IntervalSchedule{Every: time.Minute}, nil)
-	require.EqualError(t, err, "scheduler.Register: job is nil")
+	require.EqualError(t, err, "scheduler.RegisterSchedule: job is nil")
 }
 
 func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
@@ -725,7 +725,7 @@ func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
 	// queues on the semaphore behind it.
 	var bRuns atomic.Int32
 
-	_, err = scheduler.Register("@every 1m", hqgoscheduler.NewJob("queued", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	_, err = scheduler.Register("@every 1m", hqgoscheduler.NewJob("queued", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		bRuns.Add(1)
 
 		return
@@ -783,7 +783,7 @@ func TestScheduler_UnregisterWhileInFlight(t *testing.T) {
 	release := make(chan struct{})
 	boom := errors.New("boom")
 
-	id, err := scheduler.Register("@every 1m", hqgoscheduler.NewJob("in-flight", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	id, err := scheduler.Register("@every 1m", hqgoscheduler.NewJob("in-flight", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		select {
 		case <-started:
 		default:
@@ -847,7 +847,7 @@ func TestScheduler_EntriesReturnsIndependentSnapshot(t *testing.T) {
 
 	scheduler := hqgoscheduler.NewScheduler()
 
-	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(ctx context.Context) (err error) {
+	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
 	}))
 
@@ -875,4 +875,11 @@ func TestScheduler_EntriesReturnsIndependentSnapshot(t *testing.T) {
 	require.NotNil(t, second[0].Job)
 	require.NotNil(t, second[1].Schedule)
 	require.NotNil(t, second[1].Job)
+}
+
+func TestNewSchedulerIgnoresNilOptions(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.NewScheduler(nil)
+	require.NotNil(t, scheduler)
 }
