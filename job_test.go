@@ -17,5 +17,5 @@ func TestJob_Adapter(t *testing.T) {
 	}))
 
 	require.Equal(t, "greeter", job.Name())
-	require.NoError(t, job.Run(t.Context()))
+	require.NoError(t, job.Run(context.Background()))
 }

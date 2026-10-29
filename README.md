@@ -4,7 +4,7 @@
 
 `hq-lib-scheduler-go` is a [Go](https://golang.org/) package for running jobs on a time-based schedule.
 
-## Resources
+## Table of Contents
 
 - [Features](#features)
 - [Installation](#installation)
@@ -14,7 +14,6 @@
 	- [Introspection](#introspection)
 	- [Descriptors & Fixed Intervals](#descriptors--fixed-intervals)
 	- [Error Handling](#error-handling)
-- [Configuration](#configuration)
 - [Contributing](#contributing)
 - [Licensing](#licensing)
 
@@ -29,75 +28,69 @@
 
 ## Installation
 
-To install `hq-lib-scheduler-go`, run the following command in your Go project:
-
 ```bash
 go get github.com/hueristiq/hq-lib-scheduler-go@latest
 ```
 
-Requires Go 1.26.3 or later.
+Requires Go 1.23 or later.
 
 ## Usage
 
-The examples below import the package under the `hqgoscheduler` alias.
+The examples import the package under the `hqgoscheduler` alias:
 
 ```go
 import hqgoscheduler "github.com/hueristiq/hq-lib-scheduler-go"
 ```
-
-The snippets below are illustrative.
 
 ### Scheduling a Job
 
 Schedule a job on a cron expression with `Register`, start the scheduler, and stop it gracefully on shutdown:
 
 ```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"time"
-
-	hqgoscheduler "github.com/hueristiq/hq-lib-scheduler-go"
+scheduler := hqgoscheduler.New(
+	hqgoscheduler.WithLocation(time.UTC),
+	hqgoscheduler.WithOnError(func(event hqgoscheduler.ErrorEvent) {
+		fmt.Printf("job %q failed: %v\n", event.Entry.Job.Name(), event.Err)
+	}),
 )
 
-func main() {
-	scheduler := hqgoscheduler.NewScheduler(
-		hqgoscheduler.WithLocation(time.UTC),
-		hqgoscheduler.WithOnError(func(event hqgoscheduler.ErrorEvent) {
-			fmt.Printf("job %q failed: %v\n", event.Entry.Job.Name(), event.Err)
-		}),
-	)
+// Every weekday at 09:30 UTC.
+schedule := "30 9 * * MON-FRI"
 
-	// Every weekday at 09:30 UTC.
-	schedule := "30 9 * * MON-FRI"
+job := hqgoscheduler.NewJob("report", func(ctx context.Context) error {
+	fmt.Println("generating report...")
 
-	job := hqgoscheduler.NewJob("report", func(ctx context.Context) error {
-		fmt.Println("generating report...")
+	return nil
+})
 
-		return nil
-	})
-
-	id, err := scheduler.Register(schedule, job)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("registered entry", id)
-
-	scheduler.Start(context.Background())
-
-	// ... run the application ...
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-
-	defer cancel()
-
-	if err := scheduler.Stop(ctx); err != nil {
-		fmt.Printf("shutdown incomplete: %v\n", err)
-	}
+id, err := scheduler.Register(schedule, job)
+if err != nil {
+	panic(err)
 }
+
+fmt.Println("registered entry", id)
+
+scheduler.Start(context.Background())
+
+// ... run the application ...
+
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+defer cancel()
+
+if err := scheduler.Stop(ctx); err != nil {
+	fmt.Printf("shutdown incomplete: %v\n", err)
+}
+```
+
+For a plain function, `RegisterFunc` wraps and registers it in one call:
+
+```go
+id, err := scheduler.RegisterFunc("@hourly", "cleanup", func(ctx context.Context) error {
+	fmt.Println("cleaning up...")
+
+	return nil
+})
 ```
 
 Registration is also possible after `Start`, and `Unregister(id)` unregisters an entry at any time. `Start` and `Stop` must not be called concurrently: serialize lifecycle calls. Cancelling the lifecycle context stops the loop without waiting for in-flight runs. Use a `Stop` context that lets the in-flight runs finish before restarting; a `Stop` that times out leaves the scheduler stopped with entries not reset, so recreate the scheduler instead of restarting it.
@@ -144,29 +137,18 @@ _, _ = scheduler.Register("@every 30s", job)               // every 30 seconds
 `WithOnError` receives an `ErrorEvent` — a snapshot of the entry and the failure, a returned error or a recovered panic — for every failed run:
 
 ```go
-scheduler := hqgoscheduler.NewScheduler(
+scheduler := hqgoscheduler.New(
 	hqgoscheduler.WithOnError(func(event hqgoscheduler.ErrorEvent) {
 		metrics.Incr("scheduler.job.failed", "name", event.Entry.Job.Name())
 	}),
 )
 ```
 
-## Configuration
-
-Behavior is set through functional options passed to `NewScheduler`. Any option left unset falls back to its default. The `With*` helpers cover the common cases; because the option receives the exported `Options` type, callers can also write custom `OptionFunc`s.
-
-| Option | Description | Default |
-| --- | --- | --- |
-| `WithLocation(loc)` | Location cron expressions are evaluated in. `nil` is ignored. | `time.Local` |
-| `WithClock(fn)` | Time source of the scheduler. Exists primarily as a test seam; `nil` is ignored. | `time.Now` |
-| `WithMaxConcurrency(n)` | Maximum number of job runs executing concurrently; runs beyond the bound wait for a slot. Negative values are treated as zero. | `0` (unlimited) |
-| `WithOnError(fn)` | Callback invoked for every failed run, receiving a ErrorEvent with the entry snapshot and the error or recovered panic. | failures dropped |
-
 ## Contributing
 
 Contributions are welcome and encouraged! Feel free to submit [Pull Requests](https://github.com/hueristiq/hq-lib-scheduler-go/pulls) or report [Issues](https://github.com/hueristiq/hq-lib-scheduler-go/issues). For more details, check out the [contribution guidelines](https://github.com/hueristiq/hq-lib-scheduler-go/blob/main/CONTRIBUTING.md).
 
-A big thank you to all the [contributors](https://github.com/hueristiq/hq-lib-scheduler-go/graphs/contributors) for your ongoing support!
+A big thank you to all the [contributors](https://github.com/hueristiq/hq-lib-scheduler-go/graphs/contributors) for their ongoing support!
 
 ![contributors](https://contrib.rocks/image?repo=hueristiq/hq-lib-scheduler-go&max=500)
 

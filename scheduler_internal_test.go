@@ -18,7 +18,7 @@ import (
 func TestRunJob_DoesNotRunWhenStopped(t *testing.T) {
 	t.Parallel()
 
-	s := NewScheduler(WithMaxConcurrency(1))
+	s := New(WithMaxConcurrency(1))
 
 	var runs atomic.Int32
 
@@ -150,7 +150,7 @@ func (s *scriptedSchedule) Next(after time.Time) time.Time {
 func TestLoopRescheduleBranches(t *testing.T) {
 	t.Parallel()
 
-	scheduler := NewScheduler()
+	scheduler := New()
 	removed := &scriptedSchedule{scheduler: scheduler, done: make(chan struct{}), unregisterOnSecond: true}
 	past := &scriptedSchedule{scheduler: scheduler, done: make(chan struct{})}
 
@@ -193,7 +193,7 @@ func TestLoopRescheduleBranches(t *testing.T) {
 func TestScheduler_RestartAfterParentContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	scheduler := NewScheduler()
+	scheduler := New()
 
 	var runs atomic.Int32
 
@@ -230,7 +230,7 @@ func TestScheduler_RestartAfterParentContextCancellation(t *testing.T) {
 func TestRunJobDoesNotRunAfterCancellation(t *testing.T) {
 	t.Parallel()
 
-	scheduler := NewScheduler()
+	scheduler := New()
 
 	var ran atomic.Bool
 
@@ -267,7 +267,7 @@ func (j *panickingNameJob) Run(context.Context) error {
 func TestRunJobRecoversPanickingName(t *testing.T) {
 	t.Parallel()
 
-	scheduler := NewScheduler()
+	scheduler := New()
 
 	var (
 		ran         atomic.Bool
