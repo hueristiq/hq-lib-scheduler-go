@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,7 +88,7 @@ func TestScheduler_RegisterAndEntries(t *testing.T) {
 
 	clock := newFakeClock(time.Date(2025, time.January, 15, 10, 30, 0, 0, time.UTC))
 
-	scheduler := hqgoscheduler.NewScheduler(
+	scheduler := hqgoscheduler.New(
 		hqgoscheduler.WithLocation(time.UTC),
 		hqgoscheduler.WithClock(clock.Now),
 	)
@@ -104,10 +105,10 @@ func TestScheduler_RegisterAndEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, id1, id2)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	defer func() {
-		require.NoError(t, scheduler.Stop(t.Context()))
+		require.NoError(t, scheduler.Stop(context.Background()))
 	}()
 
 	require.Eventually(t, func() (ok bool) {
@@ -143,7 +144,7 @@ func TestScheduler_RegisterAndEntries(t *testing.T) {
 func TestScheduler_RegisterValidation(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
@@ -160,7 +161,7 @@ func TestScheduler_RegisterValidation(t *testing.T) {
 func TestScheduler_RunsJobs(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	var runs atomic.Int32
 
@@ -171,7 +172,7 @@ func TestScheduler_RunsJobs(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	require.Eventually(t, func() (ok bool) {
 		ok = runs.Load() >= 3
@@ -179,7 +180,7 @@ func TestScheduler_RunsJobs(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	entries := scheduler.Entries()
 	require.Len(t, entries, 1)
@@ -189,7 +190,7 @@ func TestScheduler_RunsJobs(t *testing.T) {
 func TestScheduler_SkipOverlap(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	var (
 		runs        atomic.Int32
@@ -212,7 +213,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	// Let several activations pass while a run is in flight: each 60ms run
 	// spans about six 10ms activations, all of which must be skipped.
@@ -222,7 +223,7 @@ func TestScheduler_SkipOverlap(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	// Overlapping activations are skipped: never two in flight, and far fewer
 	// completions than the activations a naive runner would have started.
@@ -240,7 +241,7 @@ func TestScheduler_OnError(t *testing.T) {
 		entries  []hqgoscheduler.Entry
 	)
 
-	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
+	scheduler := hqgoscheduler.New(hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
 		mu.Lock()
 
 		defer mu.Unlock()
@@ -263,7 +264,7 @@ func TestScheduler_OnError(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	require.Eventually(t, func() (ok bool) {
 		mu.Lock()
@@ -275,7 +276,7 @@ func TestScheduler_OnError(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	mu.Lock()
 
@@ -306,7 +307,7 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 
 	var runs atomic.Int32
 
-	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithOnError(func(_ hqgoscheduler.ErrorEvent) {
+	scheduler := hqgoscheduler.New(hqgoscheduler.WithOnError(func(_ hqgoscheduler.ErrorEvent) {
 		panic("observer kaput")
 	}))
 
@@ -319,7 +320,7 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	// Every failed run is delivered through the panicking callback; two
 	// deliveries prove the panic is recovered, and reaching Stop at all
@@ -330,7 +331,7 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	// The scheduling loop was unaffected: the failing job kept firing.
 	require.Greater(t, runs.Load(), int32(1))
@@ -339,7 +340,7 @@ func TestScheduler_OnErrorPanicIsRecovered(t *testing.T) {
 func TestScheduler_StopCancelsPerRunContext(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	started := make(chan struct{})
 
@@ -358,7 +359,7 @@ func TestScheduler_StopCancelsPerRunContext(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	select {
 	case <-started:
@@ -368,13 +369,13 @@ func TestScheduler_StopCancelsPerRunContext(t *testing.T) {
 
 	// The job only returns when its per-run context is cancelled; Stop must
 	// cancel it and then complete.
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 }
 
 func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	started := make(chan struct{})
 
@@ -392,7 +393,7 @@ func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	select {
 	case <-started:
@@ -400,7 +401,7 @@ func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 		t.Fatal("job never started")
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	err = scheduler.Stop(ctx)
@@ -411,7 +412,7 @@ func TestScheduler_StopHonorsContextDeadline(t *testing.T) {
 func TestScheduler_MaxConcurrency(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler(hqgoscheduler.WithMaxConcurrency(1))
+	scheduler := hqgoscheduler.New(hqgoscheduler.WithMaxConcurrency(1))
 
 	var (
 		runs        atomic.Int32
@@ -439,7 +440,7 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 	_, err = scheduler.Register("@every 10ms", hqgoscheduler.NewJob("two", work))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	// Let several runs complete while the semaphore serializes them.
 	require.Eventually(t, func() (ok bool) {
@@ -448,7 +449,7 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	require.Equal(t, int32(1), maxInFlight.Load())
 }
@@ -456,22 +457,22 @@ func TestScheduler_MaxConcurrency(t *testing.T) {
 func TestScheduler_StartStopIdempotent(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	// Double start is a no-op.
-	scheduler.Start(t.Context())
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
+	scheduler.Start(context.Background())
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	// Double stop is a no-op.
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 }
 
 func TestScheduler_Restart(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	var runs atomic.Int32
 
@@ -482,7 +483,7 @@ func TestScheduler_Restart(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	require.Eventually(t, func() (ok bool) {
 		ok = runs.Load() >= 2
@@ -490,11 +491,11 @@ func TestScheduler_Restart(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	// A stopped scheduler can be started again: the entry is rescheduled and
 	// fires on the fresh loop.
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	require.Eventually(t, func() (ok bool) {
 		ok = runs.Load() >= 4
@@ -502,13 +503,13 @@ func TestScheduler_Restart(t *testing.T) {
 		return
 	}, 3*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 }
 
 func TestScheduler_StartWithCancelledContext(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	var runs atomic.Int32
 
@@ -519,7 +520,7 @@ func TestScheduler_StartWithCancelledContext(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	scheduler.Start(ctx)
@@ -533,7 +534,7 @@ func TestScheduler_StartWithCancelledContext(t *testing.T) {
 	}, 50*time.Millisecond, 5*time.Millisecond)
 	require.Zero(t, runs.Load())
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 }
 
 func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
@@ -543,7 +544,7 @@ func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
 
 	clock := newFakeClock(start)
 
-	scheduler := hqgoscheduler.NewScheduler(
+	scheduler := hqgoscheduler.New(
 		hqgoscheduler.WithLocation(time.UTC),
 		hqgoscheduler.WithClock(clock.Now),
 	)
@@ -560,10 +561,10 @@ func TestScheduler_FiresCronExpressionWithFakeClock(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	defer func() {
-		require.NoError(t, scheduler.Stop(t.Context()))
+		require.NoError(t, scheduler.Stop(context.Background()))
 	}()
 
 	// Advance the fake clock progressively past the next activation
@@ -591,7 +592,7 @@ func TestScheduler_RegisterSchedule(t *testing.T) {
 
 	clock := newFakeClock(start)
 
-	scheduler := hqgoscheduler.NewScheduler(
+	scheduler := hqgoscheduler.New(
 		hqgoscheduler.WithLocation(time.UTC),
 		hqgoscheduler.WithClock(clock.Now),
 	)
@@ -611,10 +612,10 @@ func TestScheduler_RegisterSchedule(t *testing.T) {
 	require.NoError(t, err)
 	require.Positive(t, id)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	defer func() {
-		require.NoError(t, scheduler.Stop(t.Context()))
+		require.NoError(t, scheduler.Stop(context.Background()))
 	}()
 
 	// Advance the fake clock until the one-shot activation fires; the loop
@@ -656,7 +657,7 @@ func TestScheduler_RegisterSchedule(t *testing.T) {
 func TestScheduler_RegisterScheduleValidation(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
@@ -676,7 +677,7 @@ func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
 
 	clock := newFakeClock(start)
 
-	scheduler := hqgoscheduler.NewScheduler(
+	scheduler := hqgoscheduler.New(
 		hqgoscheduler.WithLocation(time.UTC),
 		hqgoscheduler.WithClock(clock.Now),
 		hqgoscheduler.WithMaxConcurrency(1),
@@ -705,7 +706,7 @@ func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	// Advance the fake clock past A's activation and wait until it is
 	// running, holding the slot.
@@ -749,7 +750,7 @@ func TestScheduler_StopSkipsQueuedRun(t *testing.T) {
 
 	// A honors cancellation, so Stop completes; B, queued behind A, must
 	// never execute.
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 
 	require.Equal(t, int32(1), aRuns.Load())
 	require.Zero(t, bRuns.Load())
@@ -767,7 +768,7 @@ func TestScheduler_UnregisterWhileInFlight(t *testing.T) {
 		events []hqgoscheduler.ErrorEvent
 	)
 
-	scheduler := hqgoscheduler.NewScheduler(
+	scheduler := hqgoscheduler.New(
 		hqgoscheduler.WithLocation(time.UTC),
 		hqgoscheduler.WithClock(clock.Now),
 		hqgoscheduler.WithOnError(func(ev hqgoscheduler.ErrorEvent) {
@@ -798,7 +799,7 @@ func TestScheduler_UnregisterWhileInFlight(t *testing.T) {
 	})))
 	require.NoError(t, err)
 
-	scheduler.Start(t.Context())
+	scheduler.Start(context.Background())
 
 	// Advance the fake clock so the run starts, then unregister the entry
 	// while it is in flight: the run is not interrupted.
@@ -839,13 +840,13 @@ func TestScheduler_UnregisterWhileInFlight(t *testing.T) {
 		return
 	}, 5*time.Second, 5*time.Millisecond)
 
-	require.NoError(t, scheduler.Stop(t.Context()))
+	require.NoError(t, scheduler.Stop(context.Background()))
 }
 
 func TestScheduler_EntriesReturnsIndependentSnapshot(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	job := hqgoscheduler.NewJob("job", hqgoscheduler.JobFunc(func(_ context.Context) (err error) {
 		return
@@ -877,9 +878,71 @@ func TestScheduler_EntriesReturnsIndependentSnapshot(t *testing.T) {
 	require.NotNil(t, second[1].Job)
 }
 
-func TestNewSchedulerIgnoresNilOptions(t *testing.T) {
+func TestNewIgnoresNilOptions(t *testing.T) {
 	t.Parallel()
 
-	scheduler := hqgoscheduler.NewScheduler(nil)
+	scheduler := hqgoscheduler.New(nil)
 	require.NotNil(t, scheduler)
+}
+
+func TestScheduler_RegisterFunc(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.New()
+
+	var runs atomic.Int32
+
+	id, err := scheduler.RegisterFunc("@every 15ms", "counter", func(_ context.Context) (err error) {
+		runs.Add(1)
+
+		return
+	})
+	require.NoError(t, err)
+	require.Positive(t, id)
+
+	entries := scheduler.Entries()
+	require.Len(t, entries, 1)
+	require.Equal(t, "counter", entries[0].Job.Name())
+
+	scheduler.Start(context.Background())
+
+	require.Eventually(t, func() (ok bool) {
+		ok = runs.Load() >= 2
+
+		return
+	}, 3*time.Second, 5*time.Millisecond)
+
+	require.NoError(t, scheduler.Stop(context.Background()))
+}
+
+func TestScheduler_RegisterFuncParseError(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.New()
+
+	_, err := scheduler.RegisterFunc("not a spec", "broken", func(_ context.Context) (err error) {
+		return
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "scheduler.Register")
+}
+
+// ExampleScheduler_RegisterFunc demonstrates scheduling a plain function under a name.
+func ExampleScheduler_RegisterFunc() {
+	scheduler := hqgoscheduler.New()
+
+	id, err := scheduler.RegisterFunc("@hourly", "cleanup", func(_ context.Context) error {
+		fmt.Println("cleaning up...")
+
+		return nil
+	})
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	fmt.Printf("registered entry %d\n", id)
+	// Output:
+	// registered entry 1
 }

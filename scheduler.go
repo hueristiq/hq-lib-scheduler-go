@@ -104,7 +104,7 @@ func (h *entryHeap) Pop() (x any) {
 //
 // # Lifecycle
 //
-//  1. Construct with [NewScheduler], optionally passing [OptionFunc] values.
+//  1. Construct with [New], optionally passing [OptionFunc] values.
 //  2. Register jobs with [Scheduler.Register] (cron expression, descriptor, or
 //     `@every` interval) or [Scheduler.RegisterSchedule] (a pre-built
 //     [Schedule], including custom implementations); registration is possible
@@ -128,7 +128,7 @@ func (h *entryHeap) Pop() (x any) {
 // activation arrives, that activation is dropped and the entry is
 // rescheduled.
 //
-// The zero value is not usable; construct through [NewScheduler]. A Scheduler must
+// The zero value is not usable; construct through [New]. A Scheduler must
 // not be copied after first use.
 //
 // Fields:
@@ -449,6 +449,8 @@ func (s *Scheduler) now() (now time.Time) {
 // The generation identifies the [Scheduler.Start] call the loop belongs to:
 // when a restart supersedes it, the loop exits instead of double-firing
 // jobs. loopDone is closed on exit, runCtx parents every per-run context.
+// The sleep timer is created lazily on the first sleep and reused via Reset
+// across iterations.
 //
 // Parameters:
 //   - runCtx (context.Context): the run context of this generation.
@@ -467,6 +469,8 @@ func (s *Scheduler) loop(runCtx context.Context, generation int, loopDone chan s
 
 		s.mu.Unlock()
 	}()
+
+	var timer *time.Timer
 
 	for {
 		// Sample the clock before taking the mutex: s.now calls the
@@ -560,8 +564,6 @@ func (s *Scheduler) loop(runCtx context.Context, generation int, loopDone chan s
 
 		s.mu.Unlock()
 
-		var timer *time.Timer
-
 		var timerC <-chan time.Time
 
 		if !earliest.IsZero() {
@@ -578,7 +580,12 @@ func (s *Scheduler) loop(runCtx context.Context, generation int, loopDone chan s
 				delay = maxSleepQuantum
 			}
 
-			timer = time.NewTimer(delay)
+			if timer == nil {
+				timer = time.NewTimer(delay)
+			} else {
+				timer.Reset(delay)
+			}
+
 			timerC = timer.C
 		}
 
@@ -746,7 +753,7 @@ type ErrorEvent struct {
 type OnError func(event ErrorEvent)
 
 // Options configures a [Scheduler] and is populated through [OptionFunc]
-// values passed to [NewScheduler].
+// values passed to [New].
 //
 // Fields:
 //   - Location (*time.Location): cron evaluation location; defaults to
@@ -774,14 +781,14 @@ type OptionFunc func(opts *Options)
 // promptly.
 const maxSleepQuantum = time.Second
 
-// NewScheduler creates a [Scheduler] configured by the given options.
+// New creates a [Scheduler] configured by the given options.
 //
 // Parameters:
 //   - ofs (...OptionFunc): functional options configuring the scheduler.
 //
 // Returns:
 //   - scheduler (*Scheduler): a new scheduler, not yet started.
-func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
+func New(ofs ...OptionFunc) (scheduler *Scheduler) {
 	opts := &Options{
 		Location: time.Local,
 		Clock:    time.Now,
@@ -804,6 +811,25 @@ func NewScheduler(ofs ...OptionFunc) (scheduler *Scheduler) {
 	if opts.MaxConcurrency > 0 {
 		scheduler.sem = make(chan struct{}, opts.MaxConcurrency)
 	}
+
+	return
+}
+
+// RegisterFunc registers run as a job named name on the schedule parsed from
+// spec (see [Parse]). It is a convenience wrapper: it wraps run with [NewJob]
+// and delegates to [Scheduler.Register].
+//
+// Parameters:
+//   - spec (string): the cron expression, descriptor, or `@every` interval.
+//   - name (string): the human-readable job name, used for introspection and
+//     error reporting.
+//   - run (JobFunc): the function executed on each run.
+//
+// Returns:
+//   - entryID (int): the identifier of the new entry, for [Scheduler.Unregister].
+//   - err (error): non-nil when spec fails to parse.
+func (s *Scheduler) RegisterFunc(spec, name string, run JobFunc) (entryID int, err error) {
+	entryID, err = s.Register(spec, NewJob(name, run))
 
 	return
 }

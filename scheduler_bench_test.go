@@ -12,7 +12,7 @@ import (
 // hot entry requires one loop iteration, so the benchmark isolates the
 // wake-path cost the min-heap restructure targets.
 func BenchmarkSchedulerFireAmongMany(b *testing.B) {
-	scheduler := hqgoscheduler.NewScheduler()
+	scheduler := hqgoscheduler.New()
 
 	idle := hqgoscheduler.NewJob("idle", hqgoscheduler.JobFunc(func(context.Context) error {
 		return nil
@@ -38,7 +38,7 @@ func BenchmarkSchedulerFireAmongMany(b *testing.B) {
 		b.Fatalf("registering hot entry: %v", err)
 	}
 
-	scheduler.Start(b.Context())
+	scheduler.Start(context.Background())
 
 	b.ResetTimer()
 
@@ -48,7 +48,7 @@ func BenchmarkSchedulerFireAmongMany(b *testing.B) {
 
 	b.StopTimer()
 
-	if err := scheduler.Stop(b.Context()); err != nil {
+	if err := scheduler.Stop(context.Background()); err != nil {
 		b.Fatalf("stopping scheduler: %v", err)
 	}
 }

@@ -21,8 +21,9 @@
 //
 // # Entry points
 //
-// [NewScheduler] creates a [Scheduler]. [Scheduler.Register] registers a job on a cron
-// expression, descriptor, or `@every` interval; [Scheduler.RegisterSchedule] accepts a
+// [New] creates a [Scheduler]. [Scheduler.Register] registers a job on a cron
+// expression, descriptor, or `@every` interval; [Scheduler.RegisterFunc] does
+// the same for a plain [JobFunc] in one call; [Scheduler.RegisterSchedule] accepts a
 // ready-made [Schedule], including custom implementations. Registration is possible
 // both before and after start.
 // [Scheduler.Start] launches the scheduling loop in its own goroutine, and
@@ -40,7 +41,7 @@
 //
 // # Configuration
 //
-// Behavior is set through functional options passed to [NewScheduler]:
+// Behavior is set through functional options passed to [New]:
 //
 //   - [WithLocation] sets the location cron expressions are evaluated in.
 //   - [WithClock] substitutes the time source, primarily as a test seam.
