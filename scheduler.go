@@ -783,6 +783,10 @@ const maxSleepQuantum = time.Second
 
 // New creates a [Scheduler] configured by the given options.
 //
+// Invalid values are normalized: a nil Location falls back to [time.Local] and
+// a nil Clock falls back to [time.Now], so custom [OptionFunc] values cannot
+// configure a scheduler that panics on first use.
+//
 // Parameters:
 //   - ofs (...OptionFunc): functional options configuring the scheduler.
 //
@@ -798,6 +802,14 @@ func New(ofs ...OptionFunc) (scheduler *Scheduler) {
 		if of != nil {
 			of(opts)
 		}
+	}
+
+	if opts.Location == nil {
+		opts.Location = time.Local
+	}
+
+	if opts.Clock == nil {
+		opts.Clock = time.Now
 	}
 
 	scheduler = &Scheduler{

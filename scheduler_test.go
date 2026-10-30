@@ -885,6 +885,29 @@ func TestNewIgnoresNilOptions(t *testing.T) {
 	require.NotNil(t, scheduler)
 }
 
+func TestNewNormalizesNilLocationAndClock(t *testing.T) {
+	t.Parallel()
+
+	scheduler := hqgoscheduler.New(
+		func(opts *hqgoscheduler.Options) {
+			opts.Location = nil
+			opts.Clock = nil
+		},
+	)
+	require.NotNil(t, scheduler)
+
+	// The normalized defaults must be usable: the clock must tick and the
+	// location must be non-nil when scheduling runs start.
+	scheduler.Start(context.Background())
+
+	defer func() {
+		require.NoError(t, scheduler.Stop(context.Background()))
+	}()
+
+	entries := scheduler.Entries()
+	require.Empty(t, entries)
+}
+
 func TestScheduler_RegisterFunc(t *testing.T) {
 	t.Parallel()
 
