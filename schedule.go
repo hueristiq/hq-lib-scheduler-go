@@ -54,3 +54,5 @@ func (s IntervalSchedule) Next(after time.Time) (next time.Time) {
 
 // Compile-time guard ensuring [IntervalSchedule] satisfies [Schedule].
 var _ Schedule = IntervalSchedule{}
+
+var _ Schedule = IntervalSchedule{}
